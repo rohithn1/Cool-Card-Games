@@ -220,24 +220,34 @@ export function Lobby({ onGameStart }: LobbyProps) {
         throw new Error('Invalid game code format');
       }
 
-      const { gameCode, hostPeerId } = decoded;
+      const { gameCode } = decoded;
       console.log('🎮 Joining room:', gameCode);
       
       joinGame(gameCode);
       
       const mp = getMultiplayerConnection();
-      mp.setGameCode(gameCode); // This joins the Trystero room
+      mp.setGameCode(gameCode);
       mp.setIsHost(false);
       
-      console.log('📤 Sending join request...');
-      // In Trystero, we broadcast the join request to the room.
-      // The host (who is already in the room) will hear it.
-      mp.sendToAll({
-        type: 'join_request',
-        payload: { name: playerName, peerId: peerId },
+      // Wait for discovery before sending request
+      console.log('⏳ Waiting for host discovery...');
+      const timeout = setTimeout(() => {
+        setError('Discovery timed out. Try again or check your connection.');
+        setIsConnecting(false);
+      }, 15000);
+
+      const cleanup = mp.onPeerJoined((peerId) => {
+        console.log('✨ Host discovered! Sending join request...');
+        clearTimeout(timeout);
+        
+        mp.sendToPeer(peerId, {
+          type: 'join_request',
+          payload: { name: playerName, peerId: mp.getPlayerId() },
+        });
+        
+        cleanup();
       });
       
-      console.log('✅ Join request sent!');
     } catch (err) {
       console.error('Failed to join game:', err);
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';

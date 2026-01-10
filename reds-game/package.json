@@ -13,6 +13,7 @@
     "next": "16.1.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "simple-peer": "^9.11.1",
     "trystero": "^0.22.0",
     "uuid": "^13.0.0",
     "zustand": "^5.0.9"
@@ -22,6 +23,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/simple-peer": "^9.11.9",
     "@types/uuid": "^10.0.0",
     "eslint": "^9",
     "eslint-config-next": "16.1.1",
