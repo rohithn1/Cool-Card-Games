@@ -1,0 +1,30 @@
+I want to create a website to play a game that I call "reds". The website should be 
+multiplayer and let you create a game and share a 6 digit code for others to join your 
+existing game. The game must be server-less and cache everything in the users browser. 
+I would prefer if you develop using next.js so I can deploy it on vercel for free. 
+Here are the rules for the game: 
+- Players is dealt 4 random cards from a shuffled deck. 
+- Players can view their bottom 2 cards ONCE at the start of the game. 
+- Players take turns drawing one card from the top of the deck (or can optionally draw from the top of the discard pile if they want) 
+- Players can inspect the value of the card they drew and decide to swap it with one of their 4 cards. 
+- If the players discard (or "play") one of these cards they get the associated power up: 
+    1. 7: inspect one of your own cards 
+    2. 8: inspect one other players card 
+    3. 9: blindly swap one of your cards with another players card 
+    4. 10: inspect and swap one of your cards with another players card 
+- Players can stack any card they know to be the same as the top card of the discard pile, however, only 1 player can stack so if 
+2 players try to stack a card in the middle the fastest player gets the stack. I can either stack one of my cards to reduce my total 
+card count or if I have information about another players cards I can use that information to my advantage and stack their card on 
+top of the discard pile and transfer any one of my cards to that player so as to still reduce my total card count. 
+- The game ends when a player is confident that they have the lowest total sum of all the players in the game. Once they are confident 
+the player can claim "reds" during their turn at which time they forfeit their turn. Everyone else at the table gets 1 final turn and 
+everyone shows their cards. The player with the lowest sum wins (note someone can draw a 10 or 9 and swap their cards with you so be sure 
+to weigh the risks when calling "reds"). - Card values is as follows: A = 1, 2-10, Jack = 11, Queen = 12, Black King = 13 and Red King = -2
+- Also note that if you mistack meaning that you stack the wrong card and it does not match the top card of the discard pile then you get a 
+penalty which forces you to draw an additional card (so you now have 5 cards if you had 4 previously).
+
+Here is some instruction for the visual aesthetics of the game. It should have a top down view of the table and have your cards at the bottom 
+of the screen. For the "stack" mechanism I need to click on the card I want to stack and the discard pile to stack that card. If I am competing 
+with another player for the stack we should check timestamps to see who did the action first. The game should mainly work through clicking cards 
+on the table. I should click the middle face down pile to draw a card and it should show me the card. Then I should be able to click on any of 
+my cards to swap them or click the discard pile to discard it.
