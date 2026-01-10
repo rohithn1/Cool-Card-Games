@@ -80,7 +80,7 @@ This app is designed to be deployed on Vercel:
 2. Import in Vercel
 3. Deploy!
 
-The game uses PeerJS for peer-to-peer WebRTC connections, making it serverless and free to host.
+The game uses Trystero for decentralized peer-to-peer WebRTC connections (via BitTorrent), making it fully serverless and free to host.
 
 ## 🛠 Tech Stack
 
@@ -88,7 +88,7 @@ The game uses PeerJS for peer-to-peer WebRTC connections, making it serverless a
 - **TypeScript** - Type safety
 - **Tailwind CSS** - Styling
 - **Framer Motion** - Animations
-- **PeerJS** - WebRTC peer-to-peer connections
+- **Trystero** - Serverless WebRTC matchmaking
 - **Zustand** - State management
 
 ## 📱 Features

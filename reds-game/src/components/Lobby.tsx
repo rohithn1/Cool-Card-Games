@@ -221,22 +221,17 @@ export function Lobby({ onGameStart }: LobbyProps) {
       }
 
       const { gameCode, hostPeerId } = decoded;
-      console.log('🎮 Joining game:', gameCode, 'Host:', hostPeerId);
+      console.log('🎮 Joining room:', gameCode);
       
       joinGame(gameCode);
       
       const mp = getMultiplayerConnection();
-      mp.setGameCode(gameCode); // This joins the BroadcastChannel
+      mp.setGameCode(gameCode); // This joins the Trystero room
       mp.setIsHost(false);
       
-      // For BroadcastChannel, we don't need to connect to peer directly
-      if (!mp.isUsingBroadcastChannel()) {
-        console.log('🔄 Connecting to host via PeerJS...');
-        await mp.connectToPeer(hostPeerId);
-      }
-      
       console.log('📤 Sending join request...');
-      // Send join request (broadcasts in BC mode, or sends to peer in PeerJS mode)
+      // In Trystero, we broadcast the join request to the room.
+      // The host (who is already in the room) will hear it.
       mp.sendToAll({
         type: 'join_request',
         payload: { name: playerName, peerId: peerId },
