@@ -144,27 +144,21 @@ class MultiplayerConnection {
 
       this.playerId = uuidv4();
       
-      // Use PeerJS cloud server with explicit config
+      // Use PeerJS cloud server with explicit secure config
       this.peer = new Peer(this.playerId, {
-        debug: 3, // Maximum debug logging
+        debug: 3, // maximum logging
+        host: '0.peerjs.com',
+        port: 443,
+        secure: true,
+        pingInterval: 5000, // Keep signaling connection alive
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun2.l.google.com:19302' },
             { urls: 'stun:global.stun.twilio.com:3478' },
-            // Free TURN server for NAT traversal
-            {
-              urls: 'turn:openrelay.metered.ca:80',
-              username: 'openrelayproject',
-              credential: 'openrelayproject',
-            },
-            {
-              urls: 'turn:openrelay.metered.ca:443',
-              username: 'openrelayproject',
-              credential: 'openrelayproject',
-            },
-          ]
+          ],
+          iceCandidatePoolSize: 10,
         }
       });
 
@@ -270,20 +264,22 @@ class MultiplayerConnection {
       console.log('🔗 My peer ID:', this.playerId);
       console.log('🔗 Peer object open:', this.peer?.open);
       
+      // Use standard serialization and disable 'reliable' for faster handshake
       const conn = this.peer!.connect(peerId, { 
-        reliable: true,
+        reliable: false, 
         serialization: 'json'
       });
       
       console.log('🔗 Connection object created:', conn);
 
+      // Increase timeout to 30 seconds for real-world networks
       const timeoutId = setTimeout(() => {
         if (!this.connections.has(peerId)) {
           console.error('⏱️ Connection timeout to:', peerId);
           conn.close();
-          reject(new Error('Connection timeout - make sure the host has the game lobby open'));
+          reject(new Error('Connection timeout - make sure the host has the game lobby open and is not behind a strict firewall'));
         }
-      }, 10000);
+      }, 30000);
 
       conn.on('open', () => {
         clearTimeout(timeoutId);
