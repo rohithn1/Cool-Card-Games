@@ -2,6 +2,14 @@ import Peer from 'simple-peer';
 import { GameState, GameMessage, Player } from '@/types/game';
 import { v4 as uuidv4 } from 'uuid';
 
+// Polyfill for simple-peer in Next.js environment
+if (typeof window !== 'undefined') {
+  (window as any).global = window;
+  if (!(window as any).process) {
+    (window as any).process = { nextTick: (fn: Function) => setTimeout(fn, 0), env: {} };
+  }
+}
+
 type MessageHandler = (message: GameMessage, senderId: string) => void;
 
 class SignalingChannel {
@@ -16,12 +24,8 @@ class SignalingChannel {
     if (typeof window !== 'undefined') {
       this.bc = new BroadcastChannel(`reds-signaling-${gameCode}`);
       this.bc.onmessage = (event) => {
-        // IMPORTANT: Ignore messages from ourselves
         if (event.data.from === this.playerId) return;
-        
-        if (event.data.to === this.playerId || !event.data.to) {
-          this.messageHandlers.forEach(handler => handler(event.data));
-        }
+        this.messageHandlers.forEach(handler => handler(event.data));
       };
     }
   }
@@ -53,9 +57,12 @@ class MultiplayerConnection {
   private signaling: SignalingChannel | null = null;
   private onPeerConnect: ((peerId: string) => void) | null = null;
   private discoveryInterval: any = null;
+  
+  // Track "Virtual" peers connected via BroadcastChannel (local tabs only)
+  private virtualPeers: Set<string> = new Set();
 
   async initialize(): Promise<string> {
-    console.log('✨ Simple-peer initialized with ID:', this.playerId);
+    console.log('✨ Simple-peer (Hybrid) initialized with ID:', this.playerId);
     return this.playerId;
   }
 
@@ -66,95 +73,104 @@ class MultiplayerConnection {
     this.signaling = new SignalingChannel(gameCode, this.playerId);
 
     this.signaling.onMessage((data) => {
-      const { type, signal, from, to } = data;
+      const { type, payload, from, to } = data;
 
+      // 1. Discovery handling
       if (type === 'discovery' && this.isHost) {
         console.log('👥 Host discovered peer:', from);
-        this.initiateConnection(from);
-      } else if (type === 'signal' && to === this.playerId) {
-        console.log('📨 Received signal from:', from);
-        let peer = this.peers.get(from);
-        if (!peer) {
-          peer = this.createPeer(from, false);
+        // Instant "Virtual" connection for local tabs
+        this.virtualPeers.add(from);
+        this.signaling?.send({ type: 'discovery_ack', to: from });
+        
+        // Also start WebRTC for cross-device support
+        if (!this.peers.has(from)) {
+          setTimeout(() => this.initiateWebRTC(from), 1000);
         }
-        peer.signal(signal);
+      } 
+      
+      else if (type === 'discovery_ack' && to === this.playerId) {
+        console.log('✅ Discovery acknowledged by host');
+        this.virtualPeers.add(from);
+        if (this.onPeerConnect) this.onPeerConnect(from);
+      }
+
+      // 2. WebRTC Signaling
+      else if (type === 'signal' && to === this.playerId) {
+        let peer = this.peers.get(from);
+        if (!peer || peer.destroyed) {
+          peer = this.createWebRTCPeer(from, false);
+        }
+        peer.signal(payload);
+      }
+
+      // 3. Data fallback (Virtual Peer path)
+      else if (type === 'data' && (to === this.playerId || !to)) {
+        // Only process if we don't have a solid WebRTC connection to this peer yet
+        const webrtcPeer = this.peers.get(from);
+        if (!webrtcPeer || !webrtcPeer.connected) {
+          try {
+            const message = JSON.parse(payload) as GameMessage;
+            this.messageHandlers.forEach(handler => handler(message, from));
+          } catch (e) {}
+        }
       }
     });
 
     if (!this.isHost) {
-      console.log('📡 Joiner broadcasting discovery for room:', gameCode);
       this.signaling.send({ type: 'discovery' });
-      
       this.discoveryInterval = setInterval(() => {
-        if (this.getConnectedPeers().length === 0 && this.signaling) {
-          console.log('📡 Retrying discovery...');
-          this.signaling.send({ type: 'discovery' });
-        } else {
-          clearInterval(this.discoveryInterval);
+        if (this.getConnectedPeers().length === 0) {
+          this.signaling?.send({ type: 'discovery' });
         }
       }, 3000);
     }
   }
 
-  private initiateConnection(peerId: string) {
+  private initiateWebRTC(peerId: string) {
     if (this.peers.has(peerId)) return;
-    console.log('🔗 Initiating connection to:', peerId);
-    this.createPeer(peerId, true);
+    this.createWebRTCPeer(peerId, true);
   }
 
-  private createPeer(peerId: string, initiator: boolean): Peer.Instance {
-    // Check if we already have a peer for this ID to avoid double-connecting
-    if (this.peers.has(peerId)) {
-      return this.peers.get(peerId)!;
-    }
-
-    console.log(`🛠 Creating peer (${initiator ? 'initiator' : 'receiver'}) for:`, peerId);
+  private createWebRTCPeer(peerId: string, initiator: boolean): Peer.Instance {
+    console.log(`🛠 Creating WebRTC peer (${initiator ? 'initiator' : 'receiver'}) for:`, peerId);
     
     const peer = new Peer({
       initiator,
-      // DISABLE TRICKLE for local stability. 
-      // It sends one large signal instead of many small ones.
-      trickle: false, 
+      trickle: true, // Enable trickle for better compatibility
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:global.stun.twilio.com:3478' }
+          { urls: 'stun:stun1.l.google.com:19302' }
         ]
       }
     });
 
     peer.on('signal', (signal) => {
-      console.log('📤 Sending signal to:', peerId);
-      this.signaling?.send({ type: 'signal', signal, to: peerId });
+      this.signaling?.send({ type: 'signal', payload: signal, to: peerId });
     });
 
     peer.on('connect', () => {
-      console.log('✅ Connected to peer:', peerId);
-      if (this.onPeerConnect) {
-        this.onPeerConnect(peerId);
-      }
+      console.log('⚡ WebRTC connected to:', peerId);
+      if (this.onPeerConnect) this.onPeerConnect(peerId);
     });
 
     peer.on('data', (data) => {
       try {
         const message = JSON.parse(data.toString()) as GameMessage;
         this.messageHandlers.forEach(handler => handler(message, peerId));
-      } catch (e) {
-        console.error('Failed to parse peer data:', e);
-      }
+      } catch (e) {}
     });
 
     peer.on('close', () => {
-      console.log('🔌 Peer closed:', peerId);
       this.peers.delete(peerId);
+      this.virtualPeers.delete(peerId);
       this.notifyPlayerLeft(peerId);
     });
 
     peer.on('error', (err) => {
-      console.error('❌ Peer error:', err.message);
-      // Don't delete immediately to allow for a retry if needed, 
-      // but close it to be safe.
+      console.warn('⚠️ WebRTC connection failed, falling back to BroadcastChannel:', err.message);
       peer.destroy();
+      this.peers.delete(peerId);
     });
 
     this.peers.set(peerId, peer);
@@ -178,9 +194,8 @@ class MultiplayerConnection {
 
   onPeerJoined(callback: (peerId: string) => void) {
     this.onPeerConnect = callback;
-    this.peers.forEach((peer, id) => {
-      if (peer.connected) callback(id);
-    });
+    // Notify about already connected virtual or webrtc peers
+    this.getConnectedPeers().forEach(id => callback(id));
     return () => { this.onPeerConnect = null; };
   }
 
@@ -190,24 +205,40 @@ class MultiplayerConnection {
       timestamp: Date.now(),
       senderId: this.playerId,
     };
-
     const data = JSON.stringify(fullMessage);
-    this.peers.forEach((peer) => {
+
+    // Try WebRTC first for all peers
+    this.peers.forEach((peer, id) => {
       if (peer.connected) {
         peer.send(data);
+      } else {
+        // Fallback to signaling channel for virtual/connecting peers
+        this.signaling?.send({ type: 'data', payload: data, to: id });
+      }
+    });
+
+    // Also send to virtual peers that might not have a WebRTC object yet
+    this.virtualPeers.forEach(id => {
+      if (!this.peers.has(id)) {
+        this.signaling?.send({ type: 'data', payload: data, to: id });
       }
     });
   }
 
   sendToPeer(peerId: string, message: Omit<GameMessage, 'timestamp' | 'senderId'>) {
+    const fullMessage: GameMessage = {
+      ...message,
+      timestamp: Date.now(),
+      senderId: this.playerId,
+    };
+    const data = JSON.stringify(fullMessage);
+
     const peer = this.peers.get(peerId);
     if (peer?.connected) {
-      const fullMessage: GameMessage = {
-        ...message,
-        timestamp: Date.now(),
-        senderId: this.playerId,
-      };
-      peer.send(JSON.stringify(fullMessage));
+      peer.send(data);
+    } else {
+      // Fallback for virtual peers
+      this.signaling?.send({ type: 'data', payload: data, to: peerId });
     }
   }
 
@@ -240,7 +271,8 @@ class MultiplayerConnection {
   }
 
   getConnectedPeers(): string[] {
-    return Array.from(this.peers.keys()).filter(id => this.peers.get(id)?.connected);
+    const allPeers = new Set([...this.virtualPeers, ...Array.from(this.peers.keys()).filter(id => this.peers.get(id)?.connected)]);
+    return Array.from(allPeers);
   }
 
   isReady(): boolean {
@@ -255,6 +287,7 @@ class MultiplayerConnection {
     if (this.discoveryInterval) clearInterval(this.discoveryInterval);
     this.peers.forEach(peer => peer.destroy());
     this.peers.clear();
+    this.virtualPeers.clear();
     this.signaling?.close();
     this.signaling = null;
   }
