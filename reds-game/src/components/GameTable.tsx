@@ -10,6 +10,22 @@ import { getCardPowerUp, PowerUpType, Card as CardType } from '@/types/game';
 import { getMultiplayerConnection } from '@/lib/multiplayer';
 import { useCardPositions } from '@/lib/useCardPositions';
 
+// Hook to detect if we're on mobile
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(false);
+  
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768 || 'ontouchstart' in window);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+  
+  return isMobile;
+}
+
 // Card dimensions (lg size)
 const CARD_WIDTH = 80;
 const CARD_HEIGHT = 112;
@@ -30,10 +46,11 @@ function StackAnimationResolver() {
   const { resolveStackAnimation } = useGameStore();
   
   useEffect(() => {
-    // Wait for flip animation before resolving
+    // Wait for flying + flip animation before resolving
+    // Flying takes ~500ms, flip takes ~300ms, so total ~800ms
     const timer = setTimeout(() => {
       resolveStackAnimation();
-    }, 800);
+    }, 900);
     
     return () => clearTimeout(timer);
   }, [resolveStackAnimation]);
@@ -44,15 +61,19 @@ function StackAnimationResolver() {
 // Helper component to clear stack animation after showing result
 function StackAnimationClearer() {
   const { clearStackAnimation } = useGameStore();
+  const game = useGameStore(state => state.game);
   
   useEffect(() => {
-    // Show result for 2 seconds then clear
+    // Wait for flying back animation on misstack (~600ms) + result display (~1.5s)
+    const isMisstack = game?.stackAnimation?.result?.success === false;
+    const delay = isMisstack ? 2500 : 2000;
+    
     const timer = setTimeout(() => {
       clearStackAnimation();
-    }, 2000);
+    }, delay);
     
     return () => clearTimeout(timer);
-  }, [clearStackAnimation]);
+  }, [clearStackAnimation, game?.stackAnimation?.result?.success]);
   
   return null;
 }
@@ -75,6 +96,8 @@ export function GameTable() {
     completePowerUp,
     cancelPowerUp,
     attemptStack,
+    setStackPositions,
+    setStackPhase,
     callReds,
     markReady,
     startSwapAnimation,
@@ -438,6 +461,34 @@ export function GameTable() {
       // If triple click detected, attempt stack
       if (clickData.count >= 3) {
         clickData.count = 0;
+        
+        // Get actual DOM positions for accurate animation
+        // Find the card element that was clicked
+        const cardElements = myHandRef.current?.querySelectorAll('[data-card-index]');
+        const cardEl = cardElements?.[index] as HTMLElement | undefined;
+        const discardEl = discardRef.current;
+        
+        if (cardEl && discardEl) {
+          const cardRect = cardEl.getBoundingClientRect();
+          const discardRect = discardEl.getBoundingClientRect();
+          
+          // Use actual screen positions
+          setStackPositions(
+            { x: cardRect.left + cardRect.width / 2, y: cardRect.top + cardRect.height / 2 },
+            { x: discardRect.left + discardRect.width / 2, y: discardRect.top + discardRect.height / 2 }
+          );
+        } else {
+          // Fallback to calculated positions
+          const sourcePos = cardPositions.getPlayerCardPosition(myPlayerIndex, index);
+          const discardPos = cardPositions.discardPosition;
+          if (sourcePos) {
+            setStackPositions(
+              { x: sourcePos.xPx, y: sourcePos.yPx },
+              { x: discardPos.xPx, y: discardPos.yPx }
+            );
+          }
+        }
+        
         attemptStack(index);
         // After stack, player can still use power-up by clicking again
         return;
@@ -583,6 +634,35 @@ export function GameTable() {
       if (clickData.count >= 3) {
         clickData.count = 0;
         // Stack opponent's card using my first card
+        
+        // Get actual DOM positions for accurate animation
+        // Find the opponent's card element - look for cards with data-card-index within opponent hands
+        const opponentHandEl = document.querySelector(`[data-opponent-id="${playerId}"]`);
+        const cardEl = opponentHandEl?.querySelectorAll('[data-card-index]')[cardIndex] as HTMLElement | undefined;
+        const discardEl = discardRef.current;
+        
+        if (cardEl && discardEl) {
+          const cardRect = cardEl.getBoundingClientRect();
+          const discardRect = discardEl.getBoundingClientRect();
+          
+          // Use actual screen positions
+          setStackPositions(
+            { x: cardRect.left + cardRect.width / 2, y: cardRect.top + cardRect.height / 2 },
+            { x: discardRect.left + discardRect.width / 2, y: discardRect.top + discardRect.height / 2 }
+          );
+        } else {
+          // Fallback to calculated positions
+          const opponentPlayerIndex = game.players.findIndex(p => p.id === playerId);
+          const sourcePos = cardPositions.getPlayerCardPosition(opponentPlayerIndex, cardIndex);
+          const discardPos = cardPositions.discardPosition;
+          if (sourcePos) {
+            setStackPositions(
+              { x: sourcePos.xPx, y: sourcePos.yPx },
+              { x: discardPos.xPx, y: discardPos.yPx }
+            );
+          }
+        }
+        
         attemptStack(0, playerId, cardIndex);
         return;
       }
@@ -934,10 +1014,81 @@ export function GameTable() {
     }
   };
 
+  // Mobile pan state
+  const isMobile = useIsMobile();
+  const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const panStartRef = useRef({ x: 0, y: 0 });
+  const lastPanRef = useRef({ x: 0, y: 0 });
+  
+  // Calculate table size based on number of players
+  const tableScale = opponents.length > 4 ? 1.6 : opponents.length > 2 ? 1.4 : 1.2;
+  const tableWidth = isMobile ? `${100 * tableScale}%` : '100%';
+  const tableHeight = isMobile ? `${100 * tableScale}%` : '100%';
+  
+  // Pan boundaries - allow scrolling to see the full expanded table
+  // For a 1.4x scale, the extra width is 40% of viewport, so we need to pan at most 40% of viewport
+  const maxPanX = isMobile ? (tableScale - 1) * 100 : 0; // % of viewport width
+  const maxPanY = isMobile ? (tableScale - 1) * 80 : 0; // % of viewport height (less vertical since bottom bar is fixed)
+  
+  // Touch handlers for panning
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    if (!isMobile || e.touches.length !== 1) return;
+    
+    // Don't start panning if touching an interactive element
+    const target = e.target as HTMLElement;
+    if (target.closest('button, [role="button"], .card-clickable')) return;
+    
+    panStartRef.current = {
+      x: e.touches[0].clientX - lastPanRef.current.x,
+      y: e.touches[0].clientY - lastPanRef.current.y,
+    };
+    setIsPanning(true);
+  }, [isMobile]);
+  
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (!isPanning || !isMobile || e.touches.length !== 1) return;
+    
+    const newX = e.touches[0].clientX - panStartRef.current.x;
+    const newY = e.touches[0].clientY - panStartRef.current.y;
+    
+    // Clamp to boundaries - allow scrolling to see full extended table
+    const clampedX = Math.max(-maxPanX * window.innerWidth / 100, Math.min(maxPanX * window.innerWidth / 100, newX));
+    const clampedY = Math.max(-maxPanY * window.innerHeight / 100, Math.min(maxPanY * window.innerHeight / 100 * 0.5, newY)); // Less vertical pan since bottom bar is fixed
+    
+    setPanPosition({ x: clampedX, y: clampedY });
+    lastPanRef.current = { x: clampedX, y: clampedY };
+  }, [isPanning, isMobile, maxPanX, maxPanY]);
+  
+  const handleTouchEnd = useCallback(() => {
+    setIsPanning(false);
+  }, []);
+
   return (
-    <div className="relative w-full min-h-[100dvh] h-auto bg-gradient-to-br from-emerald-950 via-emerald-900 to-teal-950 overflow-x-hidden overflow-y-auto touch-pan-y">
-      {/* Felt texture overlay */}
-      <div className="absolute inset-0 opacity-30 felt-pattern pointer-events-none" />
+    <div className="fixed inset-0 w-full h-[100dvh] bg-gradient-to-br from-emerald-950 via-emerald-900 to-teal-950 overflow-hidden flex flex-col">
+      {/* Main game area - scrollable on mobile */}
+      <div 
+        className="relative flex-1 overflow-hidden"
+        style={{ paddingBottom: isMobile ? '140px' : '160px' }} // Space for player hand at bottom
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+      >
+        {/* Pannable game table container */}
+        <motion.div
+          className="relative"
+          style={{
+            width: tableWidth,
+            height: tableHeight,
+            minWidth: '100%',
+            minHeight: '100%',
+            x: panPosition.x,
+            y: panPosition.y,
+          }}
+          transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+        >
+          {/* Felt texture overlay */}
+          <div className="absolute inset-0 opacity-30 felt-pattern pointer-events-none" />
 
       {/* Compact game code - top left */}
       <div className="absolute top-2 left-2 bg-black/40 backdrop-blur-sm px-2 py-1 rounded z-20">
@@ -992,6 +1143,7 @@ export function GameTable() {
         return (
           <div
             key={opponent.id}
+            data-opponent-id={opponent.id}
             className="absolute z-10"
             style={{
               left: `${x}%`,
@@ -1061,8 +1213,13 @@ export function GameTable() {
               }
               rotationAngle={rotationAngle}
               hiddenCardIndex={
+                // Hide card during stack animation (opponent's card being stacked)
+                (game.stackAnimation && 
+                 game.stackAnimation.phase !== 'completed' &&
+                 game.stackAnimation.stacks[0]?.targetPlayerId === opponent.id)
+                  ? game.stackAnimation.stacks[0]?.targetCardIndex ?? null
                 // Hide card during power-up swap animation (9/10 swaps)
-                (game.swapAnimation?.phase === 'animating' && 
+                : (game.swapAnimation?.phase === 'animating' && 
                  game.swapAnimation.targetPlayerId === opponent.id)
                   ? game.swapAnimation.targetCardIndex ?? null
                 // Hide card for _others swaps (both targets)
@@ -1618,10 +1775,17 @@ export function GameTable() {
         )}
       </AnimatePresence>
 
-      {/* My hand at bottom */}
-      {myPlayer && (
-        <div ref={myHandRef} className="absolute bottom-8 left-1/2 -translate-x-1/2 z-10 overflow-visible">
-          <PlayerHand
+        </motion.div>
+        {/* End of pannable container */}
+      </div>
+      {/* End of scrollable game area */}
+
+      {/* Fixed bottom bar - Player's hand and action buttons */}
+      <div className={`fixed bottom-0 left-0 right-0 z-30 bg-gradient-to-t from-emerald-950/95 via-emerald-950/80 to-transparent ${isMobile ? 'pb-2 pt-6' : 'pb-4 pt-8'}`}>
+        {/* My hand at bottom */}
+        {myPlayer && (
+          <div ref={myHandRef} className={`flex justify-center overflow-visible ${isMobile ? 'mb-1' : 'mb-2'}`}>
+            <PlayerHand
             player={myPlayer}
             isCurrentPlayer={isMyTurn}
             isMyHand={true}
@@ -1662,8 +1826,14 @@ export function GameTable() {
                 : null
             }
             hiddenCardIndex={
+              // Hide card during stack animation (my card being stacked)
+              (game.stackAnimation && 
+               game.stackAnimation.phase !== 'completed' &&
+               game.stackAnimation.stacks[0]?.playerId === peerId &&
+               !game.stackAnimation.stacks[0]?.targetPlayerId) // Only if stacking my own card
+                ? game.stackAnimation.stacks[0]?.playerCardIndex ?? null
               // Hide card during power-up swap animation (9/10 swaps)
-              (game.swapAnimation?.phase === 'animating' && 
+              : (game.swapAnimation?.phase === 'animating' && 
                game.swapAnimation.sourcePlayerId === peerId &&
                game.swapAnimation.sourceCardIndex !== undefined)
                 ? game.swapAnimation.sourceCardIndex
@@ -1675,44 +1845,45 @@ export function GameTable() {
                 ? game.cardMoveAnimation.handIndex ?? null
                 : null
             }
-          />
+            />
+          </div>
+        )}
+
+        {/* Action buttons - positioned next to hand */}
+        <div className={`flex justify-center items-center gap-3 ${isMobile ? 'mt-1' : 'mt-2'}`}>
+          {game.phase === 'viewing_cards' && isViewingMyCards && (
+            <motion.button
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={handleReadyClick}
+              className={`bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-shadow ${isMobile ? 'px-6 py-3 text-base' : 'px-8 py-4 text-lg'}`}
+            >
+              Ready!
+            </motion.button>
+          )}
+
+          {allPlayersReady && (game.phase === 'playing' || game.phase === 'final_round') && (
+            <motion.button
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              whileHover={isMyTurn && game.turnPhase === 'draw' && !game.redsCallerId ? { scale: 1.05 } : {}}
+              whileTap={isMyTurn && game.turnPhase === 'draw' && !game.redsCallerId ? { scale: 0.95 } : {}}
+              onClick={handleCallReds}
+              disabled={!isMyTurn || game.turnPhase !== 'draw' || !!game.redsCallerId}
+              className={`font-semibold rounded-lg shadow-md transition-all ${isMobile ? 'px-3 py-1.5 text-xs' : 'px-4 py-2 text-sm'} ${
+                isMyTurn && game.turnPhase === 'draw' && !game.redsCallerId
+                  ? 'bg-gradient-to-r from-red-500 to-rose-600 text-white hover:shadow-lg cursor-pointer'
+                  : game.redsCallerId
+                    ? 'bg-gray-700/50 text-gray-500 cursor-not-allowed line-through'
+                    : 'bg-gray-600/50 text-gray-400 cursor-not-allowed'
+              }`}
+            >
+              {game.redsCallerId ? 'REDS Called!' : 'REDS!'}
+            </motion.button>
+          )}
         </div>
-      )}
-
-      {/* Action buttons */}
-      <div className="absolute bottom-4 right-4 flex flex-col gap-2 z-20">
-        {game.phase === 'viewing_cards' && isViewingMyCards && (
-          <motion.button
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={handleReadyClick}
-            className="px-8 py-4 bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold text-lg rounded-xl shadow-lg hover:shadow-xl transition-shadow"
-          >
-            Ready!
-          </motion.button>
-        )}
-
-        {allPlayersReady && (game.phase === 'playing' || game.phase === 'final_round') && (
-          <motion.button
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            whileHover={isMyTurn && game.turnPhase === 'draw' && !game.redsCallerId ? { scale: 1.05 } : {}}
-            whileTap={isMyTurn && game.turnPhase === 'draw' && !game.redsCallerId ? { scale: 0.95 } : {}}
-            onClick={handleCallReds}
-            disabled={!isMyTurn || game.turnPhase !== 'draw' || !!game.redsCallerId}
-            className={`px-4 py-2 font-semibold text-sm rounded-lg shadow-md transition-all ${
-              isMyTurn && game.turnPhase === 'draw' && !game.redsCallerId
-                ? 'bg-gradient-to-r from-red-500 to-rose-600 text-white hover:shadow-lg cursor-pointer'
-                : game.redsCallerId
-                  ? 'bg-gray-700/50 text-gray-500 cursor-not-allowed line-through'
-                  : 'bg-gray-600/50 text-gray-400 cursor-not-allowed'
-            }`}
-          >
-            {game.redsCallerId ? 'REDS Called!' : 'REDS!'}
-          </motion.button>
-        )}
       </div>
 
       {/* Subtle "give a card" prompt (no background dim) */}
@@ -2104,125 +2275,168 @@ export function GameTable() {
         )}
       </AnimatePresence>
 
-      {/* Stack Animation Overlay */}
+      {/* Stack Animation Overlay - Point-to-Point Animation */}
       <AnimatePresence>
-        {game.stackAnimation && game.stackAnimation.stacks.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className={`fixed inset-0 flex items-center justify-center z-40 pointer-events-none ${
-              game.stackAnimation.result?.awaitingCardGive ? 'bg-transparent' : 'bg-black/60'
-            }`}
-          >
-            <div className="relative flex flex-col items-center gap-6 pointer-events-auto">
-              {/* Card flipping animation - squeeze and swap */}
+        {game.stackAnimation && game.stackAnimation.stacks.length > 0 && (() => {
+          const stack = game.stackAnimation.stacks[0];
+          const sourcePos = game.stackAnimation.sourcePosition || { x: window.innerWidth / 2, y: window.innerHeight };
+          const rawDiscardPos = game.stackAnimation.discardPosition || cardPositions.discardPosition;
+          // Normalize discard position - handle both { x: number, y: number } and PositionWithPixels types
+          const discardPos = {
+            x: 'xPx' in rawDiscardPos ? rawDiscardPos.xPx : (typeof rawDiscardPos.x === 'number' ? rawDiscardPos.x : parseFloat(rawDiscardPos.x)),
+            y: 'yPx' in rawDiscardPos ? rawDiscardPos.yPx : (typeof rawDiscardPos.y === 'number' ? rawDiscardPos.y : parseFloat(rawDiscardPos.y)),
+          };
+          const phase = game.stackAnimation.phase;
+          const result = game.stackAnimation.result;
+          
+          // Calculate animation target based on phase
+          const getAnimationTarget = () => {
+            if (phase === 'flying_to_discard') {
+              return { x: discardPos.x, y: discardPos.y };
+            }
+            if (phase === 'flying_back' && sourcePos) {
+              return { x: sourcePos.x, y: sourcePos.y };
+            }
+            // showing_result or completed - stay at discard
+            return { x: discardPos.x, y: discardPos.y };
+          };
+          
+          const target = getAnimationTarget();
+          
+          return (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className={`fixed inset-0 z-40 pointer-events-none ${
+                result?.awaitingCardGive ? 'bg-transparent' : phase === 'flying_back' ? 'bg-black/40' : 'bg-black/60'
+              }`}
+            >
+              {/* Flying card animation */}
               <motion.div
-                initial={{ y: 100, scale: 0.8 }}
+                initial={{ 
+                  x: sourcePos.x - 40, // Offset for card center (half of lg card width ~80px)
+                  y: sourcePos.y - 56, // Offset for card center (half of lg card height ~112px)
+                  scale: 0.8,
+                  rotate: 0,
+                }}
                 animate={{ 
-                  y: game.stackAnimation.result?.success === false ? 100 : 0,
-                  scale: 1.1,
+                  x: phase === 'flying_back' ? sourcePos.x - 40 : target.x - 40,
+                  y: phase === 'flying_back' ? sourcePos.y - 56 : target.y - 56,
+                  scale: phase === 'flying_to_discard' ? 1.2 : 1,
+                  rotate: phase === 'flying_to_discard' ? [0, -5, 5, 0] : 0,
                 }}
                 transition={{ 
-                  duration: 0.6,
-                  type: 'spring',
-                  stiffness: 200,
+                  duration: phase === 'flying_back' ? 0.6 : 0.5,
+                  ease: phase === 'flying_back' ? 'easeOut' : 'easeInOut',
                 }}
-                className="relative"
+                className="absolute pointer-events-auto"
+                style={{ zIndex: 100 }}
               >
-                {/* Card back - squeezes out */}
-                <motion.div
-                  initial={{ scaleX: 1, opacity: 1 }}
-                  animate={{ scaleX: 0, opacity: 0 }}
-                  transition={{ duration: 0.3, ease: 'easeIn' }}
-                  style={{ transformOrigin: 'center' }}
-                  className="absolute inset-0"
-                >
-                  <Card 
-                    card={{ ...game.stackAnimation.stacks[0].card, faceUp: false }} 
-                    size="lg"
-                  />
-                </motion.div>
-                
-                {/* Card front - expands in */}
-                <motion.div
-                  initial={{ scaleX: 0, opacity: 0 }}
-                  animate={{ scaleX: 1, opacity: 1 }}
-                  transition={{ duration: 0.3, ease: 'easeOut', delay: 0.3 }}
-                  style={{ transformOrigin: 'center' }}
-                >
-                  <Card 
-                    card={{ ...game.stackAnimation.stacks[0].card, faceUp: true }} 
-                    size="lg"
-                  />
-                </motion.div>
-                
-                {/* Player name badge */}
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.3 }}
-                  className="absolute -bottom-10 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-sm font-bold whitespace-nowrap bg-emerald-600 text-white"
-                >
-                  {game.stackAnimation.stacks[0].playerName}
-                </motion.div>
+                <div className="relative">
+                  {/* Card back - squeezes out during flip */}
+                  <motion.div
+                    initial={{ scaleX: 1, opacity: 1 }}
+                    animate={{ 
+                      scaleX: phase !== 'flying_to_discard' ? 0 : 1,
+                      opacity: phase !== 'flying_to_discard' ? 0 : 1,
+                    }}
+                    transition={{ duration: 0.25, ease: 'easeIn', delay: phase === 'flying_to_discard' ? 0.3 : 0 }}
+                    style={{ transformOrigin: 'center' }}
+                    className={phase !== 'flying_to_discard' ? 'absolute inset-0' : ''}
+                  >
+                    <div className={`rounded-xl ${phase === 'flying_to_discard' ? 'ring-4 ring-yellow-400 shadow-[0_0_30px_rgba(250,204,21,0.8)]' : ''}`}>
+                      <Card 
+                        card={{ ...stack.card, faceUp: false }} 
+                        size="lg"
+                      />
+                    </div>
+                  </motion.div>
+                  
+                  {/* Card front - expands in after flip */}
+                  <motion.div
+                    initial={{ scaleX: 0, opacity: 0 }}
+                    animate={{ 
+                      scaleX: phase !== 'flying_to_discard' ? 1 : 0,
+                      opacity: phase !== 'flying_to_discard' ? 1 : 0,
+                    }}
+                    transition={{ duration: 0.25, ease: 'easeOut', delay: phase === 'flying_to_discard' ? 0 : 0.25 }}
+                    style={{ transformOrigin: 'center' }}
+                  >
+                    <div className={`rounded-xl ${result?.success ? 'ring-4 ring-green-400 shadow-[0_0_30px_rgba(34,197,94,0.8)]' : result?.success === false ? 'ring-4 ring-red-500 shadow-[0_0_30px_rgba(239,68,68,0.8)]' : ''}`}>
+                      <Card 
+                        card={{ ...stack.card, faceUp: true }} 
+                        size="lg"
+                      />
+                    </div>
+                  </motion.div>
+                  
+                  {/* Player name badge */}
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.2 }}
+                    className="absolute -bottom-8 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap bg-emerald-600 text-white shadow-lg"
+                  >
+                    {stack.playerName}
+                  </motion.div>
+                </div>
               </motion.div>
               
-              {/* Result indicator - X or Checkmark */}
+              {/* Result indicator - centered overlay */}
               <AnimatePresence>
-                {game.stackAnimation.result && (
+                {result && phase !== 'flying_to_discard' && (
                   <motion.div
-                    initial={{ scale: 0, rotate: -45 }}
-                    animate={{ scale: 1, rotate: 0 }}
-                    exit={{ scale: 0 }}
-                    transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-                    className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
+                    initial={{ scale: 0, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0, opacity: 0 }}
+                    transition={{ type: 'spring', stiffness: 300, damping: 20, delay: 0.3 }}
+                    className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
                   >
-                    {game.stackAnimation.result.success ? (
-                      <div className="flex flex-col items-center gap-2">
+                    {result.success ? (
+                      <div className="flex flex-col items-center gap-2 bg-black/50 px-8 py-6 rounded-2xl backdrop-blur-sm">
                         <motion.div 
-                          className="text-8xl text-green-500 font-black drop-shadow-lg"
+                          className="text-7xl sm:text-8xl text-green-500 font-black drop-shadow-lg"
                           animate={{ scale: [1, 1.2, 1] }}
                           transition={{ duration: 0.5 }}
                         >
                           ✓
                         </motion.div>
-                        <span className="text-2xl font-bold text-green-400">SUCCESS!</span>
+                        <span className="text-xl sm:text-2xl font-bold text-green-400">SUCCESS!</span>
                       </div>
                     ) : (
-                      <div className="flex flex-col items-center gap-2">
+                      <div className="flex flex-col items-center gap-2 bg-black/50 px-8 py-6 rounded-2xl backdrop-blur-sm">
                         <motion.div 
-                          className="text-8xl text-red-500 font-black drop-shadow-lg"
+                          className="text-7xl sm:text-8xl text-red-500 font-black drop-shadow-lg"
                           animate={{ scale: [1, 1.2, 1], rotate: [0, -5, 5, 0] }}
                           transition={{ duration: 0.5 }}
                         >
                           ✗
                         </motion.div>
-                        <span className="text-2xl font-bold text-red-400">MISTACK!</span>
-                        <span className="text-sm text-red-300">Drawing penalty card...</span>
+                        <span className="text-xl sm:text-2xl font-bold text-red-400">MISSTACK!</span>
+                        <span className="text-xs sm:text-sm text-red-300">Drawing penalty card...</span>
                       </div>
                     )}
                   </motion.div>
                 )}
               </AnimatePresence>
               
-              {/* "STACK!" text while animating */}
-              {!game.stackAnimation.result && (
+              {/* "STACKING..." text while flying */}
+              {phase === 'flying_to_discard' && !result && (
                 <motion.div
-                  initial={{ scale: 0, rotate: -20 }}
-                  animate={{ scale: 1, rotate: 0 }}
-                  className="absolute -top-20"
+                  initial={{ scale: 0, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0, opacity: 0 }}
+                  className="absolute top-1/4 left-1/2 -translate-x-1/2 pointer-events-none"
                 >
-                  <span className="text-5xl font-black text-yellow-400 drop-shadow-lg tracking-wider">
+                  <span className="text-4xl sm:text-5xl font-black text-yellow-400 drop-shadow-lg tracking-wider">
                     STACKING...
                   </span>
                 </motion.div>
               )}
-              
-              {/* (Prompt moved to a subtle pill; no blocking UI here) */}
-            </div>
-          </motion.div>
-        )}
+            </motion.div>
+          );
+        })()}
       </AnimatePresence>
 
       {/* Trigger stack resolution after flip animation */}
@@ -2436,6 +2650,36 @@ export function GameTable() {
           className="fixed bottom-8 right-8 z-50 px-6 py-3 bg-gradient-to-r from-amber-500 to-orange-600 text-white font-bold rounded-xl shadow-lg"
         >
           Show Scores / Play Again
+        </motion.button>
+      )}
+      
+      {/* Mobile pan indicator - shows when table is pannable */}
+      {isMobile && tableScale > 1 && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: isPanning ? 0 : 1, y: 0 }}
+          transition={{ delay: 1 }}
+          className="fixed bottom-36 left-1/2 -translate-x-1/2 z-40 px-3 py-1.5 bg-black/60 backdrop-blur-sm rounded-full text-white/80 text-xs flex items-center gap-2 pointer-events-none"
+        >
+          <span className="text-base">👆</span>
+          <span>Drag to pan table</span>
+        </motion.div>
+      )}
+      
+      {/* Reset pan button for mobile */}
+      {isMobile && (panPosition.x !== 0 || panPosition.y !== 0) && (
+        <motion.button
+          initial={{ opacity: 0, scale: 0.8 }}
+          animate={{ opacity: 1, scale: 1 }}
+          whileTap={{ scale: 0.9 }}
+          onClick={() => {
+            setPanPosition({ x: 0, y: 0 });
+            lastPanRef.current = { x: 0, y: 0 };
+          }}
+          className="fixed top-14 right-2 z-50 px-2 py-1 bg-black/50 backdrop-blur-sm rounded-full text-white/80 text-xs flex items-center gap-1"
+        >
+          <span>⟲</span>
+          <span>Center</span>
         </motion.button>
       )}
     </div>

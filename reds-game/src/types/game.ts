@@ -67,6 +67,10 @@ export interface StackAnimation {
   stacks: StackAction[];
   winnerId: string | null;
   resolvedAt: number | null;
+  // Position data for point-to-point animation
+  sourcePosition?: { x: number; y: number }; // Where the card starts (player's hand)
+  discardPosition?: { x: number; y: number }; // Where the discard pile is
+  phase: 'flying_to_discard' | 'showing_result' | 'flying_back' | 'completed';
   // Track the stack result for animation
   result?: {
     success: boolean;

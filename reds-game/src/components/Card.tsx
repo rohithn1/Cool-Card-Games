@@ -19,6 +19,17 @@ interface CardProps {
 // xs is for mobile screens, sm for small mobile, md for tablets, lg for desktop
 const sizeConfig = {
   xs: {
+    width: 'w-8',
+    height: 'h-11',
+    cornerRank: 'text-[6px]',
+    cornerSymbol: 'text-[5px]',
+    centerSymbol: 'text-base',
+    jokerLetter: 'text-[3px]',
+    jokerCenter: 'text-sm',
+    cornerOffset: 'top-0 left-0.5',
+    border: 'border',
+  },
+  sm: {
     width: 'w-10',
     height: 'h-14',
     cornerRank: 'text-[8px]',
@@ -27,17 +38,6 @@ const sizeConfig = {
     jokerLetter: 'text-[4px]',
     jokerCenter: 'text-lg',
     cornerOffset: 'top-0.5 left-0.5',
-    border: 'border',
-  },
-  sm: {
-    width: 'w-12',
-    height: 'h-16',
-    cornerRank: 'text-[10px]',
-    cornerSymbol: 'text-[8px]',
-    centerSymbol: 'text-2xl',
-    jokerLetter: 'text-[5px]',
-    jokerCenter: 'text-xl',
-    cornerOffset: 'top-0.5 left-1',
     border: 'border',
   },
   md: {
@@ -233,7 +233,7 @@ export function Deck({
       whileHover={onClick && !disabled ? { scale: 1.03 } : {}}
       whileTap={onClick && !disabled ? { scale: 0.95 } : {}}
       onClick={!disabled ? onClick : undefined}
-      className={`relative w-14 h-20 sm:w-16 sm:h-22 md:w-20 md:h-28 ${onClick && !disabled ? 'cursor-pointer' : ''}`}
+      className={`relative w-10 h-14 sm:w-14 sm:h-20 md:w-16 md:h-22 lg:w-20 lg:h-28 ${onClick && !disabled ? 'cursor-pointer' : ''}`}
     >
       <AnimatePresence>
         {[...Array(Math.min(5, count))].map((_, i) => (
@@ -265,7 +265,7 @@ export function Deck({
         key={count}
         initial={{ scale: 1.2 }}
         animate={{ scale: 1 }}
-        className="absolute -bottom-1.5 -right-1.5 sm:-bottom-2 sm:-right-2 bg-amber-500 text-amber-950 rounded-full w-5 h-5 sm:w-7 sm:h-7 flex items-center justify-center text-[10px] sm:text-xs font-bold shadow-md z-10"
+        className="absolute -bottom-1 -right-1 sm:-bottom-1.5 sm:-right-1.5 md:-bottom-2 md:-right-2 bg-amber-500 text-amber-950 rounded-full w-4 h-4 sm:w-5 sm:h-5 md:w-7 md:h-7 flex items-center justify-center text-[8px] sm:text-[10px] md:text-xs font-bold shadow-md z-10"
       >
         {count}
       </motion.div>
@@ -291,13 +291,13 @@ export function DiscardPile({
         whileHover={onClick && !disabled ? { scale: 1.03 } : {}}
         onClick={!disabled ? onClick : undefined}
         className={`
-          w-14 h-20 sm:w-16 sm:h-22 md:w-20 md:h-28 rounded-lg sm:rounded-xl border-2 border-dashed border-emerald-600/50
+          w-10 h-14 sm:w-14 sm:h-20 md:w-16 md:h-22 lg:w-20 lg:h-28 rounded-lg sm:rounded-xl border-2 border-dashed border-emerald-600/50
           bg-emerald-800/30 flex items-center justify-center
           ${onClick && !disabled ? 'cursor-pointer' : ''}
           ${highlighted ? 'ring-2 sm:ring-4 ring-cyan-400 animate-pulse' : ''}
         `}
       >
-        <span className="text-emerald-600/50 text-[10px] sm:text-xs">Discard</span>
+        <span className="text-emerald-600/50 text-[8px] sm:text-[10px] md:text-xs">Discard</span>
       </motion.div>
     );
   }
@@ -317,8 +317,9 @@ export function DiscardPile({
           className="absolute"
           style={{ top: (2 - i) * 2, left: (2 - i) * 1.5, zIndex: i }}
         >
-          <Card card={{ ...card, faceUp: false }} size="md" className="sm:hidden" />
-          <Card card={{ ...card, faceUp: false }} size="lg" className="hidden sm:block" />
+          <Card card={{ ...card, faceUp: false }} size="sm" className="sm:hidden" />
+          <Card card={{ ...card, faceUp: false }} size="md" className="hidden sm:block md:hidden" />
+          <Card card={{ ...card, faceUp: false }} size="lg" className="hidden md:block" />
         </div>
       ))}
       
@@ -327,8 +328,9 @@ export function DiscardPile({
         className="relative z-10" 
         style={{ marginTop: 4, marginLeft: 3 }}
       >
-        <Card card={topCard} size="md" highlighted={highlighted} className="sm:hidden" />
-        <Card card={topCard} size="lg" highlighted={highlighted} className="hidden sm:block" />
+        <Card card={topCard} size="sm" highlighted={highlighted} className="sm:hidden" />
+        <Card card={topCard} size="md" highlighted={highlighted} className="hidden sm:block md:hidden" />
+        <Card card={topCard} size="lg" highlighted={highlighted} className="hidden md:block" />
       </div>
     </motion.div>
   );

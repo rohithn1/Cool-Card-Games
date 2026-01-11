@@ -699,7 +699,7 @@ export function Lobby({ onGameStart }: LobbyProps) {
             <li>• Call <span className="text-red-400">&quot;Reds!&quot;</span> when ready — everyone else gets one final turn</li>
           </ul>
           
-          <p className="mt-4 text-emerald-600/60"><span className="text-emerald-400">v</span><span className="text-emerald-500">1</span><span className="text-emerald-400">.</span><span className="text-emerald-500">0</span><span className="text-emerald-400">.</span><span className="text-emerald-500">4</span>-beta</p>
+          <p className="mt-4 text-emerald-600/60"><span className="text-emerald-400">v</span><span className="text-emerald-500">1</span><span className="text-emerald-400">.</span><span className="text-emerald-500">1</span><span className="text-emerald-400">.</span><span className="text-emerald-500">2</span>-beta</p>
         </motion.div>
       </motion.div>
     </div>

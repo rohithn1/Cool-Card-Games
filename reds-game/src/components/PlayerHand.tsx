@@ -123,6 +123,7 @@ export function PlayerHand({
             return (
               <motion.div
                 key={card.id}
+                data-card-index={index}
                 layout
                 initial={{ scale: 1, opacity: 1 }}
                 animate={{ 
@@ -378,6 +379,7 @@ export function OpponentHand({
             return (
               <motion.div
                 key={card.id}
+                data-card-index={originalIndex}
                 layout
                 initial={{ scale: 1, opacity: 1 }}
                 animate={{ 

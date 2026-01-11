@@ -60,6 +60,8 @@ interface GameStore {
   
   // Stacking
   attemptStack: (playerCardIndex: number, targetPlayerId?: string, targetCardIndex?: number) => void;
+  setStackPositions: (sourcePos: { x: number; y: number }, discardPos: { x: number; y: number }) => void;
+  setStackPhase: (phase: 'flying_to_discard' | 'showing_result' | 'flying_back' | 'completed') => void;
   resolveStackAnimation: () => void;
   completeStackGive: (cardIndexToGive: number) => void;
   clearStackAnimation: () => void;
@@ -805,6 +807,7 @@ export const useGameStore = create<GameStore>()(
         const isMatch = cardsMatch(stackCard, topDiscard);
 
         // Start the stack animation (show card flipping toward discard)
+        // Position data will be set by the UI component
         set({
           game: {
             ...game,
@@ -812,12 +815,46 @@ export const useGameStore = create<GameStore>()(
               stacks: [stackAction],
               winnerId: null,
               resolvedAt: null,
+              phase: 'flying_to_discard',
               result: undefined,
             },
             lastAction: `${currentPlayer.name} is attempting to stack...`,
             stateVersion: (game.stateVersion || 0) + 1,
           },
           selectedCardIndex: null,
+        });
+      },
+
+      setStackPositions: (sourcePos, discardPos) => {
+        const { game } = get();
+        if (!game || !game.stackAnimation) return;
+        
+        set({
+          game: {
+            ...game,
+            stackAnimation: {
+              ...game.stackAnimation,
+              sourcePosition: sourcePos,
+              discardPosition: discardPos,
+            },
+            stateVersion: (game.stateVersion || 0) + 1,
+          },
+        });
+      },
+      
+      setStackPhase: (phase) => {
+        const { game } = get();
+        if (!game || !game.stackAnimation) return;
+        
+        set({
+          game: {
+            ...game,
+            stackAnimation: {
+              ...game.stackAnimation,
+              phase,
+            },
+            stateVersion: (game.stateVersion || 0) + 1,
+          },
         });
       },
 
@@ -835,12 +872,13 @@ export const useGameStore = create<GameStore>()(
         const isStackingOpponentCard = stack.targetPlayerId !== undefined;
         
         if (!isMatch) {
-          // MISTACK - Show red X
+          // MISTACK - Set phase to flying_back so card animates back
           set({
             game: {
               ...game,
               stackAnimation: {
                 ...game.stackAnimation,
+                phase: 'flying_back',
                 result: {
                   success: false,
                   stackedCard: stack.card,
@@ -855,12 +893,13 @@ export const useGameStore = create<GameStore>()(
             },
           });
         } else {
-          // SUCCESS - Show green check
+          // SUCCESS - Card stays at discard
           set({
             game: {
               ...game,
               stackAnimation: {
                 ...game.stackAnimation,
+                phase: 'showing_result',
                 winnerId: stack.playerId,
                 result: {
                   success: true,
