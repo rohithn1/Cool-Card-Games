@@ -200,6 +200,22 @@ class MultiplayerConnection {
     });
   }
 
+  // Relay state to all peers EXCEPT the specified one (used by host to relay non-host state changes)
+  relayStateExcept(state: GameState, excludePeerId: string) {
+    const fullMessage: GameMessage = {
+      type: 'state_sync',
+      payload: state,
+      timestamp: Date.now(),
+      senderId: this.playerId,
+    };
+    const data = JSON.stringify(fullMessage);
+    this.conns.forEach((conn, peerId) => {
+      if (conn.open && peerId !== excludePeerId) {
+        conn.send(data);
+      }
+    });
+  }
+
   setGameCode(code: string) {
     this.gameCode = code;
   }

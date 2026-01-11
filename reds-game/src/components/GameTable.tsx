@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useGameStore } from '@/store/gameStore';
 import { Card } from './Card';
 import { Deck, DiscardPile } from './Card';
@@ -9,13 +9,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { getCardPowerUp, PowerUpType, Card as CardType } from '@/types/game';
 import { getMultiplayerConnection } from '@/lib/multiplayer';
 
-// Animation for cards moving (slower for visibility)
-const cardMoveAnimation = {
-  initial: { scale: 0.8, opacity: 0 },
-  animate: { scale: 1, opacity: 1 },
-  exit: { scale: 0.8, opacity: 0 },
-  transition: { type: 'spring', stiffness: 200, damping: 20, duration: 0.5 }
-};
+// Card dimensions (lg size)
+const CARD_WIDTH = 80;
+const CARD_HEIGHT = 112;
+const CARD_GAP = 12;
 
 // Animation timing constants (in ms)
 const ANIMATION_TIMING = {
@@ -88,11 +85,49 @@ export function GameTable() {
   } = useGameStore();
 
   const [showInstructions, setShowInstructions] = useState(true);
+  const [showGameOverPanel, setShowGameOverPanel] = useState(true);
   const [drawAnimation, setDrawAnimation] = useState<'deck' | 'discard' | null>(null);
   const [drawnCardSource, setDrawnCardSource] = useState<'deck' | 'discard' | null>(null);
   const [swapAnimation, setSwapAnimation] = useState<{ cardIndex: number; card: CardType } | null>(null);
-  const [discardAnimation, setDiscardAnimation] = useState<CardType | null>(null);
-  const [flyingCard, setFlyingCard] = useState<{ card: CardType; fromTop: boolean } | null>(null);
+  
+  // Refs for precise positioning
+  const deckRef = useRef<HTMLDivElement>(null);
+  const discardRef = useRef<HTMLDivElement>(null);
+  const drawnCardRef = useRef<HTMLDivElement>(null);
+  const myHandRef = useRef<HTMLDivElement>(null);
+  
+  // Get center position of an element
+  const getElementCenter = useCallback((ref: React.RefObject<HTMLDivElement | null>) => {
+    if (!ref.current) return { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    const rect = ref.current.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
+  }, []);
+  
+  // Get position for a card in my hand (2x2 grid at bottom)
+  const getMyHandCardPosition = useCallback((cardIndex: number) => {
+    if (myHandRef.current) {
+      const rect = myHandRef.current.getBoundingClientRect();
+      // 2x2 grid: index 0,1 = top row, index 2,3 = bottom row
+      const col = cardIndex % 2;
+      const row = Math.floor(cardIndex / 2);
+      return {
+        x: rect.left + col * (CARD_WIDTH + CARD_GAP) + CARD_WIDTH / 2 + 10, // +10 for padding
+        y: rect.top + row * (CARD_HEIGHT + CARD_GAP) + CARD_HEIGHT / 2 + 10,
+      };
+    }
+    // Fallback: calculate based on window
+    const centerX = window.innerWidth / 2;
+    const bottomY = window.innerHeight - 150;
+    const col = cardIndex % 2;
+    const row = Math.floor(cardIndex / 2);
+    return {
+      x: centerX + (col === 0 ? -50 : 50),
+      y: bottomY + row * (CARD_HEIGHT + CARD_GAP),
+    };
+  }, []);
   
   // Card movement animation - persists card data for smooth animations after state change
   const [cardMoveAnim, setCardMoveAnim] = useState<{
@@ -101,6 +136,10 @@ export function GameTable() {
     handCard: CardType | null;
     handIndex: number | null;
     startTime: number;
+    // Pre-calculated positions for precise animations
+    handPos?: { x: number; y: number };
+    discardPos?: { x: number; y: number };
+    drawnPos?: { x: number; y: number };
   }>({ type: null, drawnCard: null, handCard: null, handIndex: null, startTime: 0 });
   
   // Action announcement overlay
@@ -109,16 +148,6 @@ export function GameTable() {
     playerName: string;
     card?: CardType;
   } | null>(null);
-  
-  // Flying cards for visual feedback
-  const [flyingCards, setFlyingCards] = useState<{
-    id: string;
-    card: CardType;
-    fromX: number;
-    fromY: number;
-    toX: number;
-    toY: number;
-  }[]>([]);
   
   // Power-up swap animation state
   const [powerUpSwapAnim, setPowerUpSwapAnim] = useState<{
@@ -334,19 +363,24 @@ export function GameTable() {
           handIndex: null,
           startedAt: Date.now(),
         });
-        // Also keep local state for backward compatibility
+        // Also keep local state for the sideways animation BEFORE state change
+        // Calculate exact positions using refs
+        const discardPos = getElementCenter(discardRef);
+        const drawnPos = drawnCardRef.current 
+          ? getElementCenter(drawnCardRef) 
+          : { x: window.innerWidth / 2 + 100, y: window.innerHeight / 2 };
         setCardMoveAnim({
           type: 'discard_drawn',
           drawnCard: { ...game.drawnCard },
           handCard: null,
           handIndex: null,
           startTime: Date.now(),
+          drawnPos,
+          discardPos,
         });
-        setDiscardAnimation(game.drawnCard);
         setDrawnCardSource(null);
         setTimeout(() => {
           discardCard();
-          setDiscardAnimation(null);
           clearCardMoveAnimation();
           // Clear animation after it completes
           setTimeout(() => {
@@ -417,12 +451,21 @@ export function GameTable() {
         startedAt: Date.now(),
       });
       // Store card data for animation BEFORE state change
+      // Calculate exact positions using refs
+      const handPos = getMyHandCardPosition(index);
+      const discardPos = getElementCenter(discardRef);
+      const drawnPos = drawnCardRef.current 
+        ? getElementCenter(drawnCardRef) 
+        : { x: window.innerWidth / 2 + 100, y: window.innerHeight / 2 };
       setCardMoveAnim({
         type: 'swap_cards',
         drawnCard: { ...game.drawnCard },
         handCard: { ...oldCard },
         handIndex: index,
         startTime: Date.now(),
+        handPos,
+        discardPos,
+        drawnPos,
       });
       setSwapAnimation({ cardIndex: index, card: oldCard });
       setTimeout(() => {
@@ -759,7 +802,15 @@ export function GameTable() {
   // Confirm swap after inspecting (for inspect_swap)
   const handleConfirmSwap = () => {
     if (inspectedCard && game.currentPowerUp?.type === 'inspect_swap') {
+      // Start synced swap animation so all players see the swap
+      if (game.currentPowerUp?.sourceCardIndex !== undefined) {
+        startSwapAnimation('inspect_swap', inspectedCard.playerId, inspectedCard.cardIndex, game.currentPowerUp.sourceCardIndex);
+      }
       completePowerUp(inspectedCard.playerId, inspectedCard.cardIndex);
+      // Clear swap animation after it plays
+      setTimeout(() => {
+        clearSwapAnimation();
+      }, ANIMATION_TIMING.swap);
       setInspectedCard(null);
     }
   };
@@ -891,49 +942,42 @@ export function GameTable() {
         </AnimatePresence>
       </div>
 
-      {/* Opponents in circular layout */}
+      {/* Opponents in circular layout around the table */}
       {opponents.map((opponent, idx) => {
-        // Calculate position around the table
-        // With N opponents, distribute them evenly in the top half of the circle
+        // Calculate position around the table in a semi-circle
+        // Player (you) is always at the bottom (180°), opponents spread across top arc
         const totalOpponents = opponents.length;
         
-        // Angle calculation: spread opponents across the top arc (from -60 to 60 degrees for 2 players, etc.)
+        // Spread opponents evenly across the top portion (from ~-80° to ~+80°)
+        // More opponents = wider spread
         let angle: number;
         let x: number;
         let y: number;
         let rotationAngle: number;
         
+        // Calculate spread angle based on number of opponents
+        const maxSpread = Math.min(160, 40 + totalOpponents * 25); // 65° for 1, 90° for 2, up to 160° for 5+
+        
         if (totalOpponents === 1) {
-          // Single opponent directly across (top)
+          // Single opponent directly across (top center)
           angle = 0;
-          x = 50; // center
-          y = 12; // top
+          x = 50;
+          y = 10;
           rotationAngle = 180;
-        } else if (totalOpponents === 2) {
-          // Two opponents at ±30 degrees from top
-          const positions = [-35, 35];
-          angle = positions[idx];
-          // Convert angle to position (semi-circle layout)
-          const radius = 38; // percentage from center
-          x = 50 + radius * Math.sin(angle * Math.PI / 180);
-          y = 50 - radius * Math.cos(angle * Math.PI / 180);
-          rotationAngle = angle + 180;
-        } else if (totalOpponents === 3) {
-          // Three opponents spread across top
-          const positions = [-50, 0, 50];
-          angle = positions[idx];
-          const radius = 38;
-          x = 50 + radius * Math.sin(angle * Math.PI / 180);
-          y = 50 - radius * Math.cos(angle * Math.PI / 180);
-          rotationAngle = angle + 180;
         } else {
-          // 4+ opponents - spread evenly
-          const spreadAngle = 120; // total arc to spread across
-          const step = spreadAngle / (totalOpponents - 1);
-          angle = -spreadAngle / 2 + idx * step;
-          const radius = 38;
-          x = 50 + radius * Math.sin(angle * Math.PI / 180);
-          y = 50 - radius * Math.cos(angle * Math.PI / 180);
+          // Multiple opponents - spread evenly across arc
+          // Calculate angle for this opponent
+          const step = maxSpread / (totalOpponents - 1);
+          angle = -maxSpread / 2 + idx * step;
+          
+          // Convert angle to x,y position on a semi-ellipse
+          // Use different radius for x (wider) and y (shorter) for better screen fit
+          const radiusX = 42; // wider horizontal spread
+          const radiusY = 36; // shorter vertical spread
+          x = 50 + radiusX * Math.sin(angle * Math.PI / 180);
+          y = 50 - radiusY * Math.cos(angle * Math.PI / 180);
+          
+          // Rotation should face toward center (player at bottom)
           rotationAngle = angle + 180;
         }
         
@@ -1012,16 +1056,15 @@ export function GameTable() {
       {/* Center table area */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-16 z-10">
         {/* Deck */}
-        <motion.div 
+        <div 
+          ref={deckRef}
           className="flex flex-col items-center gap-2"
-          animate={drawAnimation === 'deck' ? { scale: [1, 0.95, 1] } : {}}
-          transition={{ duration: 0.2 }}
         >
           <Deck
             count={game.deck.length}
             onClick={handleDeckClick}
             disabled={!allPlayersReady || !isMyTurn || game.turnPhase !== 'draw'}
-            highlighted={allPlayersReady && isMyTurn && game.turnPhase === 'draw'}
+            highlighted={false}
           />
           <span className="text-emerald-400 text-xs">Deck</span>
           
@@ -1038,26 +1081,17 @@ export function GameTable() {
               </motion.div>
             )}
           </AnimatePresence>
-        </motion.div>
+        </div>
 
         {/* Discard pile */}
-        <motion.div 
+        <div 
+          ref={discardRef}
           className="flex flex-col items-center gap-2 relative"
-          animate={
-            discardAnimation ? { scale: [1, 1.05, 1] } : 
-            drawAnimation === 'discard' ? { scale: [1, 0.95, 1] } : {}
-          }
-          transition={{ duration: 0.3 }}
         >
           <DiscardPile
             cards={game.discardPile}
             onClick={handleDiscardClick}
-            highlighted={
-              allPlayersReady && (
-                (isMyTurn && game.turnPhase === 'draw') ||
-                (isMyTurn && game.turnPhase === 'decide' && drawnCardSource !== 'discard')
-              )
-            }
+            highlighted={false}
           />
           <span className="text-emerald-400 text-xs">Discard</span>
           
@@ -1085,12 +1119,13 @@ export function GameTable() {
               </motion.div>
             )}
           </AnimatePresence>
-        </motion.div>
+        </div>
 
         {/* Drawn card animation - stays in place, enlarges 50% to simulate lifting */}
         <AnimatePresence mode="wait">
           {game.drawnCard && (
             <motion.div
+              ref={drawnCardRef}
               key={game.drawnCard.id}
               initial={{ scale: 1, opacity: 0.8 }}
               animate={{ scale: 1.5, opacity: 1 }}
@@ -1165,28 +1200,24 @@ export function GameTable() {
 
       {/* Card Movement Animation Overlay - shows sliding cards for all players */}
       <AnimatePresence>
-        {cardMoveAnim.type === 'discard_drawn' && cardMoveAnim.drawnCard && (
+        {cardMoveAnim.type === 'discard_drawn' && cardMoveAnim.drawnCard && cardMoveAnim.drawnPos && cardMoveAnim.discardPos && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 pointer-events-none z-30"
           >
-            {/* Card sliding from drawn position to discard pile */}
+            {/* Card sliding from drawn position to discard pile - EXACT COORDINATES */}
             <motion.div
               initial={{ 
                 position: 'fixed',
-                top: '50%',
-                left: '60%',
-                x: '-50%',
-                y: '-50%',
+                left: cardMoveAnim.drawnPos.x - CARD_WIDTH / 2,
+                top: cardMoveAnim.drawnPos.y - CARD_HEIGHT / 2,
                 scale: 1.5,
               }}
               animate={{ 
-                top: '50%',
-                left: '55%',
-                x: '-50%',
-                y: '-50%',
+                left: cardMoveAnim.discardPos.x - CARD_WIDTH / 2,
+                top: cardMoveAnim.discardPos.y - CARD_HEIGHT / 2,
                 scale: 1,
               }}
               transition={{ 
@@ -1202,9 +1233,9 @@ export function GameTable() {
         )}
       </AnimatePresence>
 
-      {/* Swap animation overlay - cards physically move on the table (SEQUENTIAL) */}
+      {/* Swap animation overlay - cards physically move on the table (SEQUENTIAL) with EXACT COORDINATES */}
       <AnimatePresence>
-        {cardMoveAnim.type === 'swap_cards' && cardMoveAnim.drawnCard && cardMoveAnim.handCard && (
+        {cardMoveAnim.type === 'swap_cards' && cardMoveAnim.drawnCard && cardMoveAnim.handCard && cardMoveAnim.handPos && cardMoveAnim.discardPos && cardMoveAnim.drawnPos && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -1219,25 +1250,18 @@ export function GameTable() {
               className="absolute inset-0 bg-black"
             />
             
-            {/* STEP 1: Card going OUT to discard (old card from hand) - flip and move to discard */}
+            {/* STEP 1: Card going OUT to discard (old card from hand) - flip and move to discard - EXACT COORDS */}
             <motion.div
               initial={{ 
                 position: 'fixed',
-                // Start at the exact card position in hand (2x2 grid)
-                // Index 0,1 = top row, Index 2,3 = bottom row
-                bottom: cardMoveAnim.handIndex !== null && cardMoveAnim.handIndex < 2 ? '18%' : '8%',
-                left: cardMoveAnim.handIndex !== null ? 
-                  `calc(50% + ${(cardMoveAnim.handIndex % 2 === 0 ? -1 : 1) * 48}px)` : '50%',
-                x: '-50%',
+                left: cardMoveAnim.handPos.x - CARD_WIDTH / 2,
+                top: cardMoveAnim.handPos.y - CARD_HEIGHT / 2,
                 scale: 1,
                 zIndex: 50,
               }}
               animate={{ 
-                // Move to discard pile position
-                bottom: '50%',
-                left: '55%',
-                x: '-50%',
-                y: '50%',
+                left: cardMoveAnim.discardPos.x - CARD_WIDTH / 2,
+                top: cardMoveAnim.discardPos.y - CARD_HEIGHT / 2,
                 scale: 1,
               }}
               transition={{ 
@@ -1272,26 +1296,18 @@ export function GameTable() {
               </div>
             </motion.div>
             
-            {/* STEP 2: Card coming IN to hand (drawn card) - moves to exact empty slot AFTER discard */}
+            {/* STEP 2: Card coming IN to hand (drawn card) - moves to exact empty slot AFTER discard - EXACT COORDS */}
             <motion.div
               initial={{ 
                 position: 'fixed',
-                // Start at center (where drawn card was shown)
-                top: '50%',
-                left: '50%',
-                x: '-50%',
-                y: '-50%',
+                left: cardMoveAnim.drawnPos.x - CARD_WIDTH / 2,
+                top: cardMoveAnim.drawnPos.y - CARD_HEIGHT / 2,
                 scale: 1.5,
                 opacity: 1,
               }}
               animate={{ 
-                // Move to the exact card position in hand where the old card was
-                top: 'auto',
-                bottom: cardMoveAnim.handIndex !== null && cardMoveAnim.handIndex < 2 ? '18%' : '8%',
-                left: cardMoveAnim.handIndex !== null ? 
-                  `calc(50% + ${(cardMoveAnim.handIndex % 2 === 0 ? -1 : 1) * 48}px)` : '50%',
-                x: '-50%',
-                y: '0%',
+                left: cardMoveAnim.handPos.x - CARD_WIDTH / 2,
+                top: cardMoveAnim.handPos.y - CARD_HEIGHT / 2,
                 scale: 1,
               }}
               transition={{ 
@@ -1311,7 +1327,7 @@ export function GameTable() {
 
       {/* Card Movement Animation for OTHER PLAYERS - shows sliding cards */}
       <AnimatePresence>
-        {game.cardMoveAnimation && game.cardMoveAnimation.playerId !== peerId && (
+        {game.cardMoveAnimation && (game.cardMoveAnimation.type === 'give' || game.cardMoveAnimation.playerId !== peerId) && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -1338,11 +1354,13 @@ export function GameTable() {
                 {game.cardMoveAnimation.type === 'discard' && '🃏 '}
                 {game.cardMoveAnimation.type === 'draw_deck' && '🎴 '}
                 {game.cardMoveAnimation.type === 'draw_discard' && '↩️ '}
+                {game.cardMoveAnimation.type === 'give' && '🎁 '}
                 {game.cardMoveAnimation.playerName}
                 {game.cardMoveAnimation.type === 'swap' && ' swapping...'}
                 {game.cardMoveAnimation.type === 'discard' && ' discarding...'}
                 {game.cardMoveAnimation.type === 'draw_deck' && ' drawing from deck...'}
                 {game.cardMoveAnimation.type === 'draw_discard' && ' taking from discard...'}
+                {game.cardMoveAnimation.type === 'give' && ' giving a card...'}
               </div>
             </motion.div>
 
@@ -1464,13 +1482,87 @@ export function GameTable() {
                 <Card card={{ ...game.cardMoveAnimation.drawnCard, faceUp: true }} size="lg" />
               </motion.div>
             )}
+
+            {/* For GIVE: show card moving from stacker hand slot to target's emptied slot */}
+            {game.cardMoveAnimation.type === 'give' &&
+              game.cardMoveAnimation.drawnCard &&
+              game.cardMoveAnimation.targetPlayerId &&
+              game.cardMoveAnimation.targetHandIndex !== undefined && (
+                (() => {
+                  // Position calculation (approximate based on table layout), consistent with swap overlay
+                  const myPosition = { x: '50%', y: '85%' };
+                  const getOpponentPosition = (playerId: string) => {
+                    const opponentIndex = opponents.findIndex(o => o.id === playerId);
+                    const count = opponents.length;
+                    if (count === 1) return { x: '50%', y: '15%' };
+                    const angleStep = 360 / (count + 1);
+                    const angle = (opponentIndex + 1) * angleStep - 90;
+                    const radius = 35;
+                    return {
+                      x: `${50 + radius * Math.cos((angle * Math.PI) / 180)}%`,
+                      y: `${50 + radius * Math.sin((angle * Math.PI) / 180)}%`,
+                    };
+                  };
+
+                  const stackerPosBase =
+                    game.cardMoveAnimation.playerId === peerId ? myPosition : getOpponentPosition(game.cardMoveAnimation.playerId);
+                  const targetPosBase =
+                    game.cardMoveAnimation.targetPlayerId === peerId ? myPosition : getOpponentPosition(game.cardMoveAnimation.targetPlayerId);
+
+                  const idxFrom = game.cardMoveAnimation.handIndex ?? 0;
+                  const idxTo = game.cardMoveAnimation.targetHandIndex ?? 0;
+
+                  const offsetForIndex = (idx: number, isBottom: boolean) => {
+                    // 2x2 grid offsets relative to player position
+                    const col = idx % 2;
+                    const row = idx < 2 ? 0 : 1;
+                    const x = (col === 0 ? -1 : 1) * 40;
+                    const y = row === 0 ? (isBottom ? -28 : 28) : (isBottom ? 28 : -28);
+                    return { x, y };
+                  };
+
+                  const fromIsBottom = game.cardMoveAnimation.playerId === peerId;
+                  const toIsBottom = game.cardMoveAnimation.targetPlayerId === peerId;
+                  const fromOff = offsetForIndex(idxFrom, fromIsBottom);
+                  const toOff = offsetForIndex(idxTo, toIsBottom);
+
+                  return (
+                    <motion.div
+                      initial={{
+                        position: 'fixed',
+                        left: stackerPosBase.x,
+                        top: stackerPosBase.y,
+                        x: fromOff.x,
+                        y: fromOff.y,
+                        scale: 1.3,
+                        opacity: 1,
+                      }}
+                      animate={{
+                        left: [stackerPosBase.x, '50%', targetPosBase.x],
+                        top: [stackerPosBase.y, '50%', targetPosBase.y],
+                        x: [fromOff.x, 0, toOff.x],
+                        y: [fromOff.y, 0, toOff.y],
+                        scale: [1.3, 1.3, 1],
+                      }}
+                      transition={{
+                        duration: 1.2,
+                        ease: 'easeInOut',
+                        times: [0, 0.5, 1],
+                      }}
+                      className="z-50"
+                    >
+                      <Card card={{ ...game.cardMoveAnimation.drawnCard, faceUp: false }} size="lg" />
+                    </motion.div>
+                  );
+                })()
+              )}
           </motion.div>
         )}
       </AnimatePresence>
       
       {/* Quick action indicator (non-blocking, subtle) */}
       <AnimatePresence>
-        {actionAnnouncement && !swapAnimation && !discardAnimation && (
+        {actionAnnouncement && !swapAnimation && (
           <motion.div
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1494,59 +1586,10 @@ export function GameTable() {
           </motion.div>
         )}
       </AnimatePresence>
-      
-      {/* Discard animation overlay */}
-      <AnimatePresence>
-        {discardAnimation && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 pointer-events-none z-30"
-          >
-            {/* Flying card to discard pile */}
-            <motion.div
-              initial={{ 
-                opacity: 1, 
-                scale: 1.5,
-                x: 'calc(50vw - 50px)',
-                y: 'calc(50vh - 70px)',
-              }}
-              animate={{ 
-                opacity: 1, 
-                scale: 1,
-                x: 'calc(50vw + 40px)',
-                y: 'calc(50vh - 70px)',
-                rotate: [0, 10, 0],
-              }}
-              exit={{ 
-                opacity: 0, 
-                scale: 0.8,
-              }}
-              transition={{ type: 'spring', stiffness: 200, damping: 20 }}
-              className="absolute"
-            >
-              <Card card={discardAnimation} size="lg" />
-            </motion.div>
-            
-            {/* DISCARD text */}
-            <motion.div
-              initial={{ scale: 0, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0, opacity: 0 }}
-              transition={{ delay: 0.1 }}
-              className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 text-4xl font-black text-rose-400 drop-shadow-lg"
-              style={{ textShadow: '0 0 20px rgba(244, 63, 94, 0.5)' }}
-            >
-              DISCARD!
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* My hand at bottom */}
       {myPlayer && (
-        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-10 overflow-visible">
+        <div ref={myHandRef} className="absolute bottom-8 left-1/2 -translate-x-1/2 z-10 overflow-visible">
           <PlayerHand
             player={myPlayer}
             isCurrentPlayer={isMyTurn}
@@ -1664,36 +1707,6 @@ export function GameTable() {
         )}
       </AnimatePresence>
 
-      {/* Flying card animation (from opponent to side panel) */}
-      <AnimatePresence>
-        {flyingCard && (
-          <motion.div
-            initial={{ 
-              opacity: 1, 
-              x: '0vw',
-              y: flyingCard.fromTop ? '-30vh' : '30vh',
-              scale: 0.5,
-            }}
-            animate={{ 
-              opacity: 1, 
-              x: '35vw',
-              y: '0vh',
-              scale: 1,
-            }}
-            exit={{ opacity: 0 }}
-            transition={{ 
-              type: 'spring', 
-              stiffness: 200, 
-              damping: 25,
-              duration: 0.5
-            }}
-            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 pointer-events-none"
-          >
-            <Card card={{ ...flyingCard.card, faceUp: true }} size="lg" />
-          </motion.div>
-        )}
-      </AnimatePresence>
-      
       {/* Power-up swap reveal - cards stay in place with highlighting */}
       
       {/* Power-up notification toast (non-blocking) */}
@@ -1943,6 +1956,7 @@ export function GameTable() {
                   ? game.players.find(p => p.id === game.swapAnimation?.secondTargetPlayerId)?.name
                   : game.players.find(p => p.id === game.swapAnimation?.targetPlayerId)?.name;
                 
+                const centerPos = { x: '50%', y: '50%' };
                 return (
                   <>
                     {/* First card moves from source to target */}
@@ -1955,15 +1969,16 @@ export function GameTable() {
                         scale: 1.5,
                       }}
                       animate={{ 
-                        left: targetPos.x,
-                        top: targetPos.y,
+                        left: [sourcePos.x, centerPos.x, targetPos.x],
+                        top: [sourcePos.y, centerPos.y, targetPos.y],
                         x: '-50%',
                         y: '-50%',
-                        scale: 1.5,
+                        scale: [1.5, 1.6, 1.5],
                       }}
                       transition={{ 
-                        duration: 0.8,
-                        ease: [0.4, 0, 0.2, 1]
+                        duration: 1.2,
+                        ease: 'easeInOut',
+                        times: [0, 0.5, 1],
                       }}
                       className="absolute"
                     >
@@ -2000,15 +2015,16 @@ export function GameTable() {
                         scale: 1.5,
                       }}
                       animate={{ 
-                        left: sourcePos.x,
-                        top: sourcePos.y,
+                        left: [targetPos.x, centerPos.x, sourcePos.x],
+                        top: [targetPos.y, centerPos.y, sourcePos.y],
                         x: '-50%',
                         y: '-50%',
-                        scale: 1.5,
+                        scale: [1.5, 1.6, 1.5],
                       }}
                       transition={{ 
-                        duration: 0.8,
-                        ease: [0.4, 0, 0.2, 1]
+                        duration: 1.2,
+                        ease: 'easeInOut',
+                        times: [0, 0.5, 1],
                       }}
                       className="absolute"
                     >

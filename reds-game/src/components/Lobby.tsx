@@ -6,6 +6,7 @@ import { getMultiplayerConnection, encodeGameCode, decodeGameCode } from '@/lib/
 import { GameMessage, Player } from '@/types/game';
 import { motion, AnimatePresence } from 'framer-motion';
 import { v4 as uuidv4 } from 'uuid';
+import Image from 'next/image';
 
 interface LobbyProps {
   onGameStart: () => void;
@@ -319,10 +320,15 @@ export function Lobby({ onGameStart }: LobbyProps) {
           animate={{ scale: 1 }}
           className="text-center mb-8"
         >
-          <h1 className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-red-500 via-rose-500 to-red-600 drop-shadow-lg">
-            REDS
-          </h1>
-          <p className="text-emerald-300 mt-2 text-sm tracking-wide">Saimo Six Seven</p>
+          <Image
+            src="/reds-logo.png"
+            alt="REDS"
+            width={280}
+            height={100}
+            className="mx-auto drop-shadow-lg"
+            priority
+          />
+          <p className="text-emerald-300 mt-2 text-sm tracking-wide">(Saimo Six Seven)</p>
         </motion.div>
 
         <AnimatePresence mode="wait">

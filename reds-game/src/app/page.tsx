@@ -20,7 +20,7 @@ export default function Home() {
 
     const mp = getMultiplayerConnection();
     
-    const unsubscribe = mp.onMessage((message: GameMessage) => {
+    const unsubscribe = mp.onMessage((message: GameMessage, senderId?: string) => {
       if (message.type === 'state_sync' && message.payload) {
         // Only sync if the message is from someone else
         if (message.senderId !== peerId) {
@@ -28,6 +28,15 @@ export default function Home() {
           if (message.timestamp > lastSyncTimestampRef.current) {
             lastSyncTimestampRef.current = message.timestamp;
             console.log('📥 Receiving state sync:', (message.payload as GameState).lastAction);
+            
+            // HOST RELAY: If we're the host and received state from another player,
+            // we need to relay it to ALL other players (since non-host players only connect to host)
+            if (isHost) {
+              console.log('🔄 Host relaying state to all other players');
+              // Relay to everyone except the original sender
+              mp.relayStateExcept(message.payload as GameState, message.senderId || senderId || '');
+            }
+            
             // Prevent echo-loop: applying remote state should not trigger a broadcast
             suppressNextBroadcastRef.current = true;
             syncState(message.payload as GameState);

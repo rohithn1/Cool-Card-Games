@@ -41,9 +41,8 @@ export function PlayerHand({
   // Cards 0, 1 are top row; 2, 3 are bottom row
   const bottomCardIndices = [2, 3];
   
-  const totalScore = player.cards.every(c => c.faceUp) 
-    ? player.cards.reduce((sum, card) => sum + getCardValue(card), 0)
-    : null;
+  // Use horizontal layout if player has more than 4 cards (penalty situation)
+  const useHorizontalLayout = player.cards.length > 4;
 
   return (
     <motion.div
@@ -66,17 +65,14 @@ export function PlayerHand({
       >
         <div className="flex flex-col">
           <span className="font-bold text-sm leading-tight">{player.name} {isMyHand && <span className="text-[10px] opacity-70 font-normal">(You)</span>}</span>
-          {totalScore !== null && (
-            <span className="text-xs font-black">{totalScore} PTS</span>
-          )}
         </div>
         {player.hasCalledReds && (
           <span className="text-[10px] px-1.5 py-0.5 bg-red-600 text-white rounded-md font-black animate-pulse">REDS</span>
         )}
       </motion.div>
 
-      {/* Cards - Flexible 2-column layout */}
-      <div className="grid grid-cols-2 gap-3 overflow-visible">
+      {/* Cards - 2x2 grid normally, horizontal row if >4 cards */}
+      <div className={`${useHorizontalLayout ? 'flex flex-row flex-wrap justify-center gap-2' : 'grid grid-cols-2 gap-3'} overflow-visible`}>
         <AnimatePresence mode="popLayout">
           {player.cards.map((card, index) => {
             const shouldShowCard = isMyHand && (
@@ -102,9 +98,10 @@ export function PlayerHand({
                 layout
                 initial={{ scale: 1, opacity: 1 }}
                 animate={{ 
-                  scale: shouldEnlarge ? 1.5 : isPowerUpConfirmedCard ? 1.1 : 1, 
+                  // 50% larger when selected for 9/10 power-ups, or when inspecting/revealing
+                  scale: shouldEnlarge ? 1.5 : isPowerUpSelected ? 1.5 : 1, 
                   opacity: 1, 
-                  zIndex: shouldEnlarge ? 100 : isPowerUpConfirmedCard ? 50 : 1,
+                  zIndex: shouldEnlarge ? 100 : isPowerUpSelected ? 50 : 1,
                 }}
                 exit={{ scale: 0, opacity: 0, y: -50 }}
                 transition={{ 
@@ -114,7 +111,7 @@ export function PlayerHand({
                   delay: index * 0.08 
                 }}
                 className={`relative ${isPowerUpSelectable && !isBeingInspected && !isRevealingSwap ? 'cursor-pointer' : ''}`}
-                style={{ position: shouldEnlarge ? 'relative' : undefined }}
+                style={{ position: shouldEnlarge || isPowerUpSelected ? 'relative' : undefined }}
               >
                 {/* Squeeze-expand flip animation container */}
                 <div className="relative">
@@ -145,25 +142,21 @@ export function PlayerHand({
                         }`}
                       />
                     )}
-                    {/* Power-up highlight ring */}
+                    {/* Power-up highlight ring - GREEN when selected for 9/10 swaps */}
                     {(isPowerUpSelectable || isPowerUpSelected) && !isBeingInspected && (
                       <motion.div
                         initial={{ opacity: 0, scale: 0.9 }}
                         animate={{ 
                           opacity: 1, 
                           scale: 1,
-                          boxShadow: isPowerUpConfirmedCard 
-                            ? '0 0 20px 5px rgba(34, 197, 94, 0.6)' 
-                            : isPowerUpSelected 
-                              ? '0 0 15px 3px rgba(59, 130, 246, 0.6)' 
-                              : '0 0 10px 2px rgba(59, 130, 246, 0.4)'
+                          boxShadow: isPowerUpSelected 
+                            ? '0 0 25px 8px rgba(34, 197, 94, 0.7)' 
+                            : '0 0 10px 2px rgba(59, 130, 246, 0.4)'
                         }}
                         className={`absolute inset-0 rounded-xl pointer-events-none z-10 ${
-                          isPowerUpConfirmedCard 
+                          isPowerUpSelected 
                             ? 'ring-4 ring-green-500' 
-                            : isPowerUpSelected 
-                              ? 'ring-3 ring-blue-500' 
-                              : 'ring-2 ring-blue-400/50'
+                            : 'ring-2 ring-blue-400/50'
                         }`}
                       />
                     )}
@@ -269,16 +262,18 @@ export function OpponentHand({
   isViewerRevealing?: boolean; // True if the current viewer is revealing this card for swap
   rotationAngle?: number;
 }) {
-  const totalScore = player.cards.every(c => c.faceUp) 
-    ? player.cards.reduce((sum, card) => sum + getCardValue(card), 0)
-    : null;
+  // Use horizontal layout if player has more than 4 cards (penalty situation)
+  const useHorizontalLayout = player.cards.length > 4;
   
   // Reorder cards based on rotation - if facing us (180 deg), flip the card order
-  // so their bottom cards (indices 2,3) appear at top
-  const shouldFlipLayout = Math.abs(rotationAngle) > 90;
+  // so their bottom cards (indices 2,3) appear at top (only for 4-card layout)
+  const shouldFlipLayout = !useHorizontalLayout && Math.abs(rotationAngle) > 90;
   
   // Card display order: if flipped, show [2,3] on top row and [0,1] on bottom
-  const cardOrder = shouldFlipLayout ? [2, 3, 0, 1] : [0, 1, 2, 3];
+  // For horizontal layout, just use normal order
+  const cardOrder = useHorizontalLayout 
+    ? player.cards.map((_, i) => i) 
+    : (shouldFlipLayout ? [2, 3, 0, 1] : [0, 1, 2, 3]);
 
   return (
     <motion.div 
@@ -304,13 +299,10 @@ export function OpponentHand({
       >
         <span className="font-semibold">{player.name}</span>
         {player.hasCalledReds && <span className="font-bold text-red-600">REDS!</span>}
-        {totalScore !== null && (
-          <span className="font-bold ml-1">{totalScore}</span>
-        )}
       </motion.div>
 
-      {/* Compact card display - 2x2 grid with click support */}
-      <div className="grid grid-cols-2 gap-1.5 overflow-visible">
+      {/* Compact card display - 2x2 grid normally, horizontal row if >4 cards */}
+      <div className={`${useHorizontalLayout ? 'flex flex-row flex-wrap justify-center gap-1' : 'grid grid-cols-2 gap-1.5'} overflow-visible`}>
         <AnimatePresence mode="popLayout">
           {cardOrder.map((originalIndex) => {
             const card = player.cards[originalIndex];
@@ -333,9 +325,10 @@ export function OpponentHand({
                 layout
                 initial={{ scale: 1, opacity: 1 }}
                 animate={{ 
-                  scale: shouldEnlarge ? 1.5 : isPowerUpConfirmedCard ? 1.15 : 1, 
+                  // 50% larger when selected for 9/10 power-ups, or when inspecting/revealing
+                  scale: shouldEnlarge ? 1.5 : isPowerUpSelected ? 1.5 : 1, 
                   opacity: 1,
-                  zIndex: shouldEnlarge ? 100 : isPowerUpConfirmedCard ? 50 : 1,
+                  zIndex: shouldEnlarge ? 100 : isPowerUpSelected ? 50 : 1,
                 }}
                 exit={{ scale: 0, opacity: 0, y: 30 }}
                 transition={{ 
@@ -343,9 +336,9 @@ export function OpponentHand({
                   stiffness: 150,
                   damping: 20,
                 }}
-                whileHover={onCardClick && !isBeingInspected && !isRevealingSwap ? { scale: 1.1, y: -5 } : {}}
+                whileHover={onCardClick && !isBeingInspected && !isRevealingSwap && !isPowerUpSelected ? { scale: 1.1, y: -5 } : {}}
                 className={`relative ${(onCardClick && !isBeingInspected && !isRevealingSwap) || isPowerUpSelectable ? 'cursor-pointer' : ''}`}
-                style={{ position: shouldEnlarge ? 'relative' : undefined }}
+                style={{ position: shouldEnlarge || isPowerUpSelected ? 'relative' : undefined }}
               >
                 {/* Squeeze-expand flip animation container */}
                 <div className="relative">
@@ -376,25 +369,21 @@ export function OpponentHand({
                         }`}
                       />
                     )}
-                    {/* Power-up highlight ring */}
+                    {/* Power-up highlight ring - GREEN when selected for 9/10 swaps */}
                     {(isPowerUpSelectable || isPowerUpSelected) && !isBeingInspected && !isRevealingSwap && (
                       <motion.div
                         initial={{ opacity: 0, scale: 0.9 }}
                         animate={{ 
                           opacity: 1, 
                           scale: 1,
-                          boxShadow: isPowerUpConfirmedCard 
-                            ? '0 0 15px 4px rgba(34, 197, 94, 0.6)' 
-                            : isPowerUpSelected 
-                              ? '0 0 12px 3px rgba(59, 130, 246, 0.6)' 
-                              : '0 0 8px 2px rgba(59, 130, 246, 0.4)'
+                          boxShadow: isPowerUpSelected 
+                            ? '0 0 20px 6px rgba(34, 197, 94, 0.7)' 
+                            : '0 0 8px 2px rgba(59, 130, 246, 0.4)'
                         }}
                         className={`absolute inset-0 rounded-lg pointer-events-none z-10 ${
-                          isPowerUpConfirmedCard 
+                          isPowerUpSelected 
                             ? 'ring-3 ring-green-500' 
-                            : isPowerUpSelected 
-                              ? 'ring-2 ring-blue-500' 
-                              : 'ring-2 ring-blue-400/50'
+                            : 'ring-2 ring-blue-400/50'
                         }`}
                       />
                     )}

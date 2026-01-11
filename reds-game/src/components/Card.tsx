@@ -309,18 +309,13 @@ export function DiscardPile({
         </div>
       ))}
       
-      <AnimatePresence mode="popLayout">
-        <motion.div 
-          key={topCard.id}
-          initial={{ scale: 0.5, y: -100, rotateZ: -20, opacity: 0 }}
-          animate={{ scale: 1, y: 0, rotateZ: 0, opacity: 1 }}
-          transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-          className="relative z-10" 
-          style={{ marginTop: 6, marginLeft: 4 }}
-        >
-          <Card card={topCard} size="lg" highlighted={highlighted} />
-        </motion.div>
-      </AnimatePresence>
+      {/* Top card - no animation, just render statically (movement handled by table overlay) */}
+      <div 
+        className="relative z-10" 
+        style={{ marginTop: 6, marginLeft: 4 }}
+      >
+        <Card card={topCard} size="lg" highlighted={highlighted} />
+      </div>
     </motion.div>
   );
 }

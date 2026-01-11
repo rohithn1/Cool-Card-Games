@@ -983,7 +983,7 @@ export const useGameStore = create<GameStore>()(
         const { game, peerId } = get();
         if (!game) return;
         
-        // If misstack, apply penalty and show the card to all players
+        // If misstack, apply penalty (do NOT reveal the penalty card via popup/text)
         if (game.stackAnimation?.result && !game.stackAnimation.result.success) {
           if (game.deck.length > 0) {
             const { card: penaltyCard, remainingDeck } = drawFromDeck(game.deck);
@@ -993,24 +993,23 @@ export const useGameStore = create<GameStore>()(
               const stackerName = game.stackAnimation.result.stackerName;
               
               if (playerIdx !== -1) {
-                // Add the card face-down to their hand
+                // Add the penalty card
                 updatedPlayers[playerIdx].cards.push({ ...penaltyCard, faceUp: false });
+
+                // If they now have more than 4 cards, reveal ALL of their cards to everyone
+                if (updatedPlayers[playerIdx].cards.length > 4) {
+                  updatedPlayers[playerIdx].cards = updatedPlayers[playerIdx].cards.map(c => ({ ...c, faceUp: true }));
+                }
               }
               
-              // Set the penalty card display so all players can see it (face up)
               set({
                 game: {
                   ...game,
                   players: updatedPlayers,
                   deck: remainingDeck,
                   stackAnimation: null,
-                  penaltyCardDisplay: {
-                    card: { ...penaltyCard, faceUp: true },
-                    playerId: game.stackAnimation.result.stackerId,
-                    playerName: stackerName,
-                    shownAt: Date.now(),
-                  },
-                  lastAction: `${stackerName} drew a penalty card: ${penaltyCard.rank} of ${penaltyCard.suit}!`,
+                  penaltyCardDisplay: null,
+                  lastAction: `${stackerName} drew a penalty card!`,
                   stateVersion: (game.stateVersion || 0) + 1,
                 },
               });
@@ -1178,6 +1177,7 @@ export const useGameStore = create<GameStore>()(
             drawnCard: null,
             currentPowerUp: null,
             lastAction: `${currentPlayer.name} called REDS! Everyone else gets 1 final turn.`,
+            stateVersion: (game.stateVersion || 0) + 1,
           },
           selectedCardIndex: null,
         });
