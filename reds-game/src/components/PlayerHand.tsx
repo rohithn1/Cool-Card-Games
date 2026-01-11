@@ -46,6 +46,7 @@ interface PlayerHandProps {
   isInspectingMyCard?: boolean;
   revealingSwapCardIndex?: number | null; // For inspect_swap (10) revealing phase
   hiddenCardIndex?: number | null; // Card being animated (hidden during swap)
+  isSwapAnimating?: boolean; // True when swap animation is playing - triggers wiggle
 }
 
 export function PlayerHand({
@@ -62,6 +63,7 @@ export function PlayerHand({
   powerUpConfirmed,
   inspectingCardIndex,
   isInspectingMyCard = false,
+  isSwapAnimating = false,
   revealingSwapCardIndex,
   hiddenCardIndex,
 }: PlayerHandProps) {
@@ -79,10 +81,15 @@ export function PlayerHand({
     >
       {/* Player name and status */}
       <motion.div 
-        animate={{ 
-          scale: isCurrentPlayer ? [1, 1.02, 1] : 1,
-        }}
-        transition={{ duration: 1.5, repeat: isCurrentPlayer ? Infinity : 0 }}
+        animate={isCurrentPlayer ? { 
+          scale: [1, 1.05, 1],
+          boxShadow: [
+            '0 0 0 0 rgba(251, 191, 36, 0)',
+            '0 0 20px 8px rgba(251, 191, 36, 0.6)',
+            '0 0 0 0 rgba(251, 191, 36, 0)'
+          ],
+        } : {}}
+        transition={{ duration: 1.2, repeat: isCurrentPlayer ? Infinity : 0, ease: 'easeInOut' }}
         className={`
           flex items-center gap-3 px-4 py-2 rounded-xl
           ${isCurrentPlayer ? 'bg-amber-500 text-amber-950 shadow-lg ring-2 ring-amber-400' : 'bg-emerald-800/80 text-emerald-100'}
@@ -91,7 +98,11 @@ export function PlayerHand({
         `}
       >
         <div className="flex flex-col">
-          <span className="font-bold text-sm leading-tight">{player.name} {isMyHand && <span className="text-[10px] opacity-70 font-normal">(You)</span>}</span>
+          <span className="font-bold text-sm leading-tight">
+            {player.name} 
+            {isMyHand && <span className="text-[10px] opacity-70 font-normal"> (You)</span>}
+            {isCurrentPlayer && isMyHand && <span className="ml-1 text-[10px] font-bold animate-pulse">👈 Your turn!</span>}
+          </span>
         </div>
         {player.hasCalledReds && (
           <span className="text-[10px] px-1.5 py-0.5 bg-red-600 text-white rounded-md font-black animate-pulse">REDS</span>
@@ -120,27 +131,38 @@ export function PlayerHand({
             const shouldEnlarge = isBeingInspected || isRevealingSwap;
             const isHidden = hiddenCardIndex === index; // Card being animated elsewhere
             
+            // Check if this is a newly added card (penalty card) - index >= 4 means it's a penalty card
+            const isPenaltyCard = index >= 4;
+            
+            // Check if this card should wiggle (swap animation active and card is selected)
+            const shouldWiggle = isSwapAnimating && isPowerUpSelected;
+            
             return (
               <motion.div
                 key={card.id}
                 data-card-index={index}
-                layout
-                initial={{ scale: 1, opacity: 1 }}
+                layout={false} // Disable layout animation completely - cards stay in grid positions
+                initial={isPenaltyCard ? { scale: 0.5, opacity: 0 } : { scale: 1, opacity: 1 }}
                 animate={{ 
-                  // 50% larger when selected for 9/10 power-ups, or when inspecting/revealing
-                  scale: isHidden ? 0.8 : shouldEnlarge ? 1.5 : isPowerUpSelected ? 1.5 : 1, 
+                  // Larger when selected for 9/10 power-ups, or when inspecting/revealing
+                  // Extra large (1.8x) during swap animation for emphasis
+                  scale: isHidden ? 0.8 : shouldWiggle ? 1.8 : shouldEnlarge ? 1.5 : isPowerUpSelected ? 1.5 : 1, 
                   opacity: isHidden ? 0 : 1, // Hide card during swap animation
-                  zIndex: shouldEnlarge ? 100 : isPowerUpSelected ? 50 : 1,
+                  zIndex: shouldWiggle ? 200 : shouldEnlarge ? 100 : isPowerUpSelected ? 50 : 1,
+                  // Wiggle rotation during swap animation
+                  rotate: shouldWiggle ? [0, -8, 8, -6, 6, -4, 4, 0] : 0,
                 }}
                 exit={{ scale: 0, opacity: 0, y: -50 }}
                 transition={{ 
                   type: 'spring',
                   stiffness: 150,
                   damping: 20,
-                  delay: isHidden ? 0 : index * 0.08 
+                  delay: isHidden ? 0 : isPenaltyCard ? 0 : index * 0.08,
+                  // Repeat wiggle animation
+                  rotate: shouldWiggle ? { duration: 0.6, repeat: 2, ease: 'easeInOut' } : { duration: 0.3 },
                 }}
                 className={`relative ${(isPowerUpSelectable || isBeingInspected) && !isRevealingSwap ? 'cursor-pointer' : ''}`}
-                style={{ position: shouldEnlarge || isPowerUpSelected ? 'relative' : undefined }}
+                style={{ position: shouldEnlarge || isPowerUpSelected || shouldWiggle ? 'relative' : undefined }}
               >
                 {/* Squeeze-expand flip animation container */}
                 <div className="relative">
@@ -278,6 +300,7 @@ export function OpponentHand({
   isViewerRevealing = false,
   rotationAngle = 0,
   hiddenCardIndex,
+  isSwapAnimating = false,
 }: {
   player: Player;
   isCurrentPlayer: boolean;
@@ -293,6 +316,7 @@ export function OpponentHand({
   isViewerRevealing?: boolean; // True if the current viewer is revealing this card for swap
   rotationAngle?: number;
   hiddenCardIndex?: number | null; // Card being animated (hidden during swap/give)
+  isSwapAnimating?: boolean; // True when swap animation is playing - triggers wiggle
 }) {
   // Responsive card size
   const cardSize = useResponsiveCardSize();
@@ -342,18 +366,24 @@ export function OpponentHand({
     >
       {/* Player name */}
       <motion.div 
-        animate={{ 
-          scale: isCurrentPlayer ? [1, 1.03, 1] : 1,
-        }}
-        transition={{ duration: 1.5, repeat: isCurrentPlayer ? Infinity : 0 }}
+        animate={isCurrentPlayer ? { 
+          scale: [1, 1.08, 1],
+          boxShadow: [
+            '0 0 0 0 rgba(234, 179, 8, 0)',
+            '0 0 15px 6px rgba(234, 179, 8, 0.7)',
+            '0 0 0 0 rgba(234, 179, 8, 0)'
+          ],
+        } : {}}
+        transition={{ duration: 1.2, repeat: isCurrentPlayer ? Infinity : 0, ease: 'easeInOut' }}
         className={`
           flex items-center gap-2 px-2 py-1 rounded-full text-xs
-          ${isCurrentPlayer ? 'bg-yellow-500/90 text-yellow-950 shadow-md' : 'bg-emerald-800/80 text-emerald-100'}
+          ${isCurrentPlayer ? 'bg-yellow-500 text-yellow-950 shadow-md font-bold' : 'bg-emerald-800/80 text-emerald-100'}
           ${player.hasCalledReds ? 'ring-2 ring-red-500' : ''}
         `}
         style={{ transform: `rotate(${-rotationAngle}deg)` }} // Counter-rotate name to be readable
       >
         <span className="font-semibold">{player.name}</span>
+        {isCurrentPlayer && <span className="ml-0.5">⏳</span>}
         {player.hasCalledReds && <span className="font-bold text-red-600">REDS!</span>}
       </motion.div>
 
@@ -376,27 +406,38 @@ export function OpponentHand({
             const shouldEnlarge = isBeingInspected || isRevealingSwap;
             const isHidden = hiddenCardIndex === originalIndex; // Card being animated elsewhere
             
+            // Check if this is a penalty card (added after initial 4)
+            const isPenaltyCard = originalIndex >= 4;
+            
+            // Check if this card should wiggle (swap animation active and card is selected)
+            const shouldWiggle = isSwapAnimating && isPowerUpSelected;
+            
             return (
               <motion.div
                 key={card.id}
                 data-card-index={originalIndex}
-                layout
-                initial={{ scale: 1, opacity: 1 }}
+                layout={false} // Disable layout animation completely - cards stay in grid positions
+                initial={isPenaltyCard ? { scale: 0.5, opacity: 0 } : { scale: 1, opacity: 1 }}
                 animate={{ 
-                  // 50% larger when selected for 9/10 power-ups, or when inspecting/revealing
-                  scale: isHidden ? 0.8 : shouldEnlarge ? 1.5 : isPowerUpSelected ? 1.5 : 1, 
+                  // Larger when selected for 9/10 power-ups, or when inspecting/revealing
+                  // Extra large (1.8x) during swap animation for emphasis
+                  scale: isHidden ? 0.8 : shouldWiggle ? 1.8 : shouldEnlarge ? 1.5 : isPowerUpSelected ? 1.5 : 1, 
                   opacity: isHidden ? 0 : 1, // Hide card during swap/give animation
-                  zIndex: shouldEnlarge ? 100 : isPowerUpSelected ? 50 : 1,
+                  zIndex: shouldWiggle ? 200 : shouldEnlarge ? 100 : isPowerUpSelected ? 50 : 1,
+                  // Wiggle rotation during swap animation
+                  rotate: shouldWiggle ? [0, -8, 8, -6, 6, -4, 4, 0] : 0,
                 }}
                 exit={{ scale: 0, opacity: 0, y: 30 }}
                 transition={{ 
                   type: 'spring',
                   stiffness: 150,
                   damping: 20,
+                  // Repeat wiggle animation
+                  rotate: shouldWiggle ? { duration: 0.6, repeat: 2, ease: 'easeInOut' } : { duration: 0.3 },
                 }}
-                whileHover={onCardClick && !isRevealingSwap && !isPowerUpSelected && !isHidden ? { scale: 1.1, y: -5 } : {}}
+                whileHover={onCardClick && !isRevealingSwap && !isPowerUpSelected && !isHidden && !shouldWiggle ? { scale: 1.1, y: -5 } : {}}
                 className={`relative ${(onCardClick && !isRevealingSwap) || isPowerUpSelectable || isBeingInspected ? 'cursor-pointer' : ''}`}
-                style={{ position: shouldEnlarge || isPowerUpSelected ? 'relative' : undefined }}
+                style={{ position: shouldEnlarge || isPowerUpSelected || shouldWiggle ? 'relative' : undefined }}
               >
                 {/* Squeeze-expand flip animation container */}
                 <div className="relative">

@@ -61,8 +61,35 @@ export interface StackAction {
   targetPlayerId?: string;     // If stacking another player's card
   targetCardIndex?: number;
   timestamp: number;
+  // Position data for animation
+  sourcePosition?: { x: number; y: number };
+  // Status after race resolution
+  status: 'pending' | 'winner' | 'loser' | 'invalid';
 }
 
+export interface StackRaceAnimation {
+  stacks: StackAction[];                    // All stack attempts in this race
+  discardPosition?: { x: number; y: number }; // Where the discard pile is
+  phase: 'collecting' | 'racing' | 'resolving' | 'completed';
+  raceWindowMs: number;                     // How long to collect stacks (e.g., 500ms)
+  startedAt: number;                        // When the first stack was received
+  winnerId: string | null;                  // Who won the race
+  winnerCard: Card | null;                  // The winning card
+  winnerStack?: StackAction | null;         // The winning stack action (for card give)
+  awaitingCardGive?: boolean;               // True when winner stacked opponent's card and needs to give a card
+  // Track individual stack results for animation
+  results: {
+    [playerId: string]: {
+      success: boolean;
+      isWinner: boolean;
+      card: Card;
+      sourcePosition: { x: number; y: number };
+      animationPhase: 'flying_to_discard' | 'at_discard' | 'flying_back' | 'done';
+    };
+  };
+}
+
+// Legacy single-stack animation (keeping for backwards compatibility)
 export interface StackAnimation {
   stacks: StackAction[];
   winnerId: string | null;
@@ -111,7 +138,8 @@ export interface GameState {
   drawnCard: Card | null;
   currentPowerUp: PowerUpAction | null;
   pendingStacks: StackAction[];
-  stackAnimation: StackAnimation | null;
+  stackAnimation: StackAnimation | null;           // Legacy single-stack animation
+  stackRaceAnimation: StackRaceAnimation | null;   // New multi-stack race animation
   swapAnimation: SwapAnimation | null; // For showing swap animations to all players
   lastDiscardWasStack: boolean; // Prevents multiple stacks on same card
   redsCallerId: string | null;
@@ -161,6 +189,8 @@ export interface GameMessage {
     | 'power_up_start'
     | 'power_up_complete'
     | 'stack_attempt'
+    | 'stack_race_join'     // New: player joins an ongoing stack race
+    | 'stack_race_resolve'  // New: host resolves the stack race
     | 'stack_result'
     | 'call_reds'
     | 'end_turn'

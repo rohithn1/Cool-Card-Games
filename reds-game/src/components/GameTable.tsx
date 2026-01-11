@@ -46,11 +46,11 @@ function StackAnimationResolver() {
   const { resolveStackAnimation } = useGameStore();
   
   useEffect(() => {
-    // Wait for flying + flip animation before resolving
-    // Flying takes ~500ms, flip takes ~300ms, so total ~800ms
+    // Wait for flying animation to complete before resolving
+    // Flying takes ~600ms, then we resolve to show result
     const timer = setTimeout(() => {
       resolveStackAnimation();
-    }, 900);
+    }, 700);
     
     return () => clearTimeout(timer);
   }, [resolveStackAnimation]);
@@ -64,9 +64,11 @@ function StackAnimationClearer() {
   const game = useGameStore(state => state.game);
   
   useEffect(() => {
-    // Wait for flying back animation on misstack (~600ms) + result display (~1.5s)
+    // Wait for:
+    // - Success: show result for 1.5s then clear
+    // - Misstack: flying back animation (~500ms) + result display (~1.5s)
     const isMisstack = game?.stackAnimation?.result?.success === false;
-    const delay = isMisstack ? 2500 : 2000;
+    const delay = isMisstack ? 2200 : 1800;
     
     const timer = setTimeout(() => {
       clearStackAnimation();
@@ -74,6 +76,70 @@ function StackAnimationClearer() {
     
     return () => clearTimeout(timer);
   }, [clearStackAnimation, game?.stackAnimation?.result?.success]);
+  
+  return null;
+}
+
+// Stack Race Resolver - waits for collection window then resolves the race
+function StackRaceResolver() {
+  const { resolveStackRace } = useGameStore();
+  const game = useGameStore(state => state.game);
+  
+  useEffect(() => {
+    if (!game?.stackRaceAnimation || game.stackRaceAnimation.phase !== 'collecting') return;
+    
+    const race = game.stackRaceAnimation;
+    const elapsed = Date.now() - race.startedAt;
+    const remaining = Math.max(0, race.raceWindowMs - elapsed);
+    
+    // Wait for race window to close, then resolve
+    const timer = setTimeout(() => {
+      resolveStackRace();
+    }, remaining + 100); // Small buffer
+    
+    return () => clearTimeout(timer);
+  }, [resolveStackRace, game?.stackRaceAnimation?.phase, game?.stackRaceAnimation?.startedAt]);
+  
+  return null;
+}
+
+// Stack Race Clearer - cleans up after all animations complete
+function StackRaceClearer() {
+  const { clearStackRace } = useGameStore();
+  const game = useGameStore(state => state.game);
+  
+  useEffect(() => {
+    if (!game?.stackRaceAnimation || game.stackRaceAnimation.phase !== 'resolving') return;
+    
+    // Wait for:
+    // - Flying to discard: ~600ms
+    // - Show result: ~1500ms
+    // - Flying back (for losers): ~500ms
+    const hasLosers = Object.values(game.stackRaceAnimation.results).some(r => !r.success || !r.isWinner);
+    const delay = hasLosers ? 3000 : 2200;
+    
+    const timer = setTimeout(() => {
+      clearStackRace();
+    }, delay);
+    
+    return () => clearTimeout(timer);
+  }, [clearStackRace, game?.stackRaceAnimation?.phase]);
+  
+  return null;
+}
+
+// Penalty Animation Clearer - auto-clears penalty card animation
+function PenaltyAnimationClearer() {
+  const { clearPenaltyCardDisplay } = useGameStore();
+  
+  useEffect(() => {
+    // Auto-clear after animation completes (800ms flight + 500ms display)
+    const timer = setTimeout(() => {
+      clearPenaltyCardDisplay();
+    }, 1500);
+    
+    return () => clearTimeout(timer);
+  }, [clearPenaltyCardDisplay]);
   
   return null;
 }
@@ -96,6 +162,11 @@ export function GameTable() {
     completePowerUp,
     cancelPowerUp,
     attemptStack,
+    joinStackRace,
+    resolveStackRace,
+    setStackRaceDiscardPosition,
+    updateStackRaceAnimationPhase,
+    clearStackRace,
     setStackPositions,
     setStackPhase,
     callReds,
@@ -201,6 +272,12 @@ export function GameTable() {
     powerUpType: PowerUpType;
   } | null>(null);
   
+  // REDS call notification (shows prominently to all players)
+  const [redsNotification, setRedsNotification] = useState<{
+    playerName: string;
+    isMe: boolean;
+  } | null>(null);
+  
   // Triple-click tracking for stacking
   const clickCountRef = useRef<{ [key: string]: { count: number; timer: NodeJS.Timeout | null; lastClickTime?: number } }>({});
   const TRIPLE_CLICK_WINDOW = 700; // ms to register triple click (slightly slower)
@@ -232,8 +309,14 @@ export function GameTable() {
       const playerName = action.split(' drew')[0];
       setActionAnnouncement({ type: 'draw', playerName });
       setTimeout(() => setActionAnnouncement(null), ANIMATION_TIMING.announcement);
+    } else if (action.includes('called REDS')) {
+      const playerName = action.split(' called REDS')[0];
+      const callerIsMe = game?.redsCallerId === peerId;
+      setRedsNotification({ playerName, isMe: callerIsMe });
+      // Keep REDS notification visible longer
+      setTimeout(() => setRedsNotification(null), 5000);
     }
-  }, [game?.lastAction]);
+  }, [game?.lastAction, game?.redsCallerId, peerId]);
   
   // Reset power-up swap animation when turn phase changes
   useEffect(() => {
@@ -248,6 +331,13 @@ export function GameTable() {
       });
     }
   }, [game?.turnPhase]);
+
+  // Reset drawnCardSource when turn phase goes back to draw (new turn started)
+  useEffect(() => {
+    if (game?.turnPhase === 'draw') {
+      setDrawnCardSource(null);
+    }
+  }, [game?.turnPhase, game?.currentPlayerIndex]);
   
   // Detect power-up usage/skip and show notification
   const lastPowerUpActionRef = useRef<string>('');
@@ -429,7 +519,12 @@ export function GameTable() {
     if (game.phase === 'viewing_cards') return;
 
     // CARD GIVE MODE: If we just stacked an opponent's card, select which card to give them
-    if (game.stackAnimation?.result?.awaitingCardGive && game.stackAnimation.result.stackerId === peerId) {
+    // Check both legacy stackAnimation and new stackRaceAnimation
+    const isAwaitingCardGive = 
+      (game.stackAnimation?.result?.awaitingCardGive && game.stackAnimation.result.stackerId === peerId) ||
+      (game.stackRaceAnimation?.awaitingCardGive && game.stackRaceAnimation.winnerId === peerId);
+    
+    if (isAwaitingCardGive) {
       if (isGivingCardRef.current) return;
       isGivingCardRef.current = true;
       const { completeStackGive } = useGameStore.getState();
@@ -463,33 +558,29 @@ export function GameTable() {
         clickData.count = 0;
         
         // Get actual DOM positions for accurate animation
-        // Find the card element that was clicked
         const cardElements = myHandRef.current?.querySelectorAll('[data-card-index]');
         const cardEl = cardElements?.[index] as HTMLElement | undefined;
         const discardEl = discardRef.current;
         
-        if (cardEl && discardEl) {
+        let sourcePosition = { x: window.innerWidth / 2, y: window.innerHeight };
+        let discardPosition = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+        
+        if (cardEl) {
           const cardRect = cardEl.getBoundingClientRect();
-          const discardRect = discardEl.getBoundingClientRect();
-          
-          // Use actual screen positions
-          setStackPositions(
-            { x: cardRect.left + cardRect.width / 2, y: cardRect.top + cardRect.height / 2 },
-            { x: discardRect.left + discardRect.width / 2, y: discardRect.top + discardRect.height / 2 }
-          );
-        } else {
-          // Fallback to calculated positions
-          const sourcePos = cardPositions.getPlayerCardPosition(myPlayerIndex, index);
-          const discardPos = cardPositions.discardPosition;
-          if (sourcePos) {
-            setStackPositions(
-              { x: sourcePos.xPx, y: sourcePos.yPx },
-              { x: discardPos.xPx, y: discardPos.yPx }
-            );
-          }
+          sourcePosition = { x: cardRect.left + cardRect.width / 2, y: cardRect.top + cardRect.height / 2 };
         }
         
-        attemptStack(index);
+        if (discardEl) {
+          const discardRect = discardEl.getBoundingClientRect();
+          discardPosition = { x: discardRect.left + discardRect.width / 2, y: discardRect.top + discardRect.height / 2 };
+        }
+        
+        // Set discard position for animation
+        setStackRaceDiscardPosition(discardPosition);
+        
+        // Attempt stack with source position
+        attemptStack(index, undefined, undefined, sourcePosition);
+        
         // After stack, player can still use power-up by clicking again
         return;
       }
@@ -591,10 +682,12 @@ export function GameTable() {
 
   // Reset local give-guard once the store clears awaitingCardGive
   useEffect(() => {
-    if (!game?.stackAnimation?.result?.awaitingCardGive) {
+    const legacyAwaiting = game?.stackAnimation?.result?.awaitingCardGive;
+    const raceAwaiting = game?.stackRaceAnimation?.awaitingCardGive;
+    if (!legacyAwaiting && !raceAwaiting) {
       isGivingCardRef.current = false;
     }
-  }, [game?.stackAnimation?.result?.awaitingCardGive]);
+  }, [game?.stackAnimation?.result?.awaitingCardGive, game?.stackRaceAnimation?.awaitingCardGive]);
 
   // Auto-clear give animation shortly after it starts (only the initiator clears to avoid races)
   useEffect(() => {
@@ -636,34 +729,28 @@ export function GameTable() {
         // Stack opponent's card using my first card
         
         // Get actual DOM positions for accurate animation
-        // Find the opponent's card element - look for cards with data-card-index within opponent hands
         const opponentHandEl = document.querySelector(`[data-opponent-id="${playerId}"]`);
         const cardEl = opponentHandEl?.querySelectorAll('[data-card-index]')[cardIndex] as HTMLElement | undefined;
         const discardEl = discardRef.current;
         
-        if (cardEl && discardEl) {
+        let sourcePosition = { x: window.innerWidth / 2, y: window.innerHeight / 3 };
+        let discardPosition = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+        
+        if (cardEl) {
           const cardRect = cardEl.getBoundingClientRect();
-          const discardRect = discardEl.getBoundingClientRect();
-          
-          // Use actual screen positions
-          setStackPositions(
-            { x: cardRect.left + cardRect.width / 2, y: cardRect.top + cardRect.height / 2 },
-            { x: discardRect.left + discardRect.width / 2, y: discardRect.top + discardRect.height / 2 }
-          );
-        } else {
-          // Fallback to calculated positions
-          const opponentPlayerIndex = game.players.findIndex(p => p.id === playerId);
-          const sourcePos = cardPositions.getPlayerCardPosition(opponentPlayerIndex, cardIndex);
-          const discardPos = cardPositions.discardPosition;
-          if (sourcePos) {
-            setStackPositions(
-              { x: sourcePos.xPx, y: sourcePos.yPx },
-              { x: discardPos.xPx, y: discardPos.yPx }
-            );
-          }
+          sourcePosition = { x: cardRect.left + cardRect.width / 2, y: cardRect.top + cardRect.height / 2 };
         }
         
-        attemptStack(0, playerId, cardIndex);
+        if (discardEl) {
+          const discardRect = discardEl.getBoundingClientRect();
+          discardPosition = { x: discardRect.left + discardRect.width / 2, y: discardRect.top + discardRect.height / 2 };
+        }
+        
+        // Set discard position for animation
+        setStackRaceDiscardPosition(discardPosition);
+        
+        // Attempt stack with source position
+        attemptStack(0, playerId, cardIndex, sourcePosition);
         return;
       }
     }
@@ -801,19 +888,19 @@ export function GameTable() {
     setTimeout(() => {
       setPowerUpSwapAnim(prev => ({ ...prev, phase: 'animating' }));
       
-      // For blind_swap (9), start the synced animation so all players see it
-      if (type === 'blind_swap') {
-        startSwapAnimation('blind_swap', oppId, oppCardIdx, myCardIdx);
-      }
-      
       // For inspect_swap (10), show revealing phase and wait for user decision
+      // DON'T call startSwapAnimation here - wait until user clicks "Swap Cards"
+      // The highlight sync is already done via setSwapSelection
       if (type === 'inspect_swap') {
         setTimeout(() => {
           setPowerUpSwapAnim(prev => ({ ...prev, phase: 'revealing' }));
           // Don't auto-complete - wait for user to click Swap or Keep button
         }, 1000);
       } else {
-        // For blind_swap (9), complete immediately after animation
+        // For blind_swap (9), start the synced animation so all players see it
+        startSwapAnimation('blind_swap', oppId, oppCardIdx, myCardIdx);
+        
+        // Complete immediately after animation
         setTimeout(() => {
           completePowerUp(oppId, oppCardIdx, myCardIdx);
           clearSwapAnimation();
@@ -848,19 +935,19 @@ export function GameTable() {
     setTimeout(() => {
       setPowerUpSwapAnim(prev => ({ ...prev, phase: 'animating' }));
       
-      // For blind_swap_others (9), start the synced animation so all players see it
-      if (type === 'blind_swap_others') {
-        startSwapAnimation('blind_swap_others', firstOppId, firstOppCardIdx, undefined, secondOppId, secondOppCardIdx);
-      }
-      
       // For inspect_swap_others (10), show revealing phase and wait for user decision
+      // DON'T call startSwapAnimation here - wait until user clicks "Swap Cards"
+      // The highlight sync is already done via setSwapSelection
       if (type === 'inspect_swap_others') {
         setTimeout(() => {
           setPowerUpSwapAnim(prev => ({ ...prev, phase: 'revealing' }));
           // Don't auto-complete - wait for user to click Swap or Keep button
         }, 1000);
       } else {
-        // For blind_swap_others (9), complete immediately after animation
+        // For blind_swap_others (9), start the synced animation so all players see it
+        startSwapAnimation('blind_swap_others', firstOppId, firstOppCardIdx, undefined, secondOppId, secondOppCardIdx);
+        
+        // Complete immediately after animation
         setTimeout(() => {
           completePowerUp(firstOppId, firstOppCardIdx, undefined, secondOppId, secondOppCardIdx);
           clearSwapAnimation();
@@ -1087,8 +1174,8 @@ export function GameTable() {
           }}
           transition={{ type: 'spring', stiffness: 300, damping: 30 }}
         >
-          {/* Felt texture overlay */}
-          <div className="absolute inset-0 opacity-30 felt-pattern pointer-events-none" />
+      {/* Felt texture overlay */}
+      <div className="absolute inset-0 opacity-30 felt-pattern pointer-events-none" />
 
       {/* Compact game code - top left */}
       <div className="absolute top-2 left-2 bg-black/40 backdrop-blur-sm px-2 py-1 rounded z-20">
@@ -1199,43 +1286,65 @@ export function GameTable() {
               inspectingCardIndex={opponentInspectingIndex}
               isViewerInspecting={isMyTurn && game.currentPowerUp?.type === 'inspect_other' && game.inspectingCard?.playerId === opponent.id}
               revealingSwapCardIndex={
-                game.currentPowerUp?.type === 'inspect_swap' &&
+                // For inspect_swap (10) - reveal opponent's card
+                (game.currentPowerUp?.type === 'inspect_swap' &&
                 powerUpSwapAnim.phase === 'revealing' &&
-                powerUpSwapAnim.opponentId === opponent.id
+                 powerUpSwapAnim.opponentId === opponent.id)
                   ? powerUpSwapAnim.opponentCardIndex
+                // For inspect_swap_others (10 with 0 cards) - reveal both opponent cards
+                : (game.currentPowerUp?.type === 'inspect_swap_others' &&
+                   powerUpSwapAnim.phase === 'revealing' &&
+                   (powerUpSwapAnim.opponentId === opponent.id || powerUpSwapAnim.secondOpponentId === opponent.id))
+                  ? (powerUpSwapAnim.opponentId === opponent.id 
+                      ? powerUpSwapAnim.opponentCardIndex 
+                      : powerUpSwapAnim.secondOpponentCardIndex)
                   : null
               }
               isViewerRevealing={
                 isMyTurn && 
-                game.currentPowerUp?.type === 'inspect_swap' && 
                 powerUpSwapAnim.phase === 'revealing' &&
-                powerUpSwapAnim.opponentId === opponent.id
+                ((game.currentPowerUp?.type === 'inspect_swap' && powerUpSwapAnim.opponentId === opponent.id) ||
+                 (game.currentPowerUp?.type === 'inspect_swap_others' && 
+                  (powerUpSwapAnim.opponentId === opponent.id || powerUpSwapAnim.secondOpponentId === opponent.id)))
               }
               rotationAngle={rotationAngle}
               hiddenCardIndex={
-                // Hide card during stack animation (opponent's card being stacked)
-                (game.stackAnimation && 
-                 game.stackAnimation.phase !== 'completed' &&
-                 game.stackAnimation.stacks[0]?.targetPlayerId === opponent.id)
-                  ? game.stackAnimation.stacks[0]?.targetCardIndex ?? null
-                // Hide card during power-up swap animation (9/10 swaps)
-                : (game.swapAnimation?.phase === 'animating' && 
-                 game.swapAnimation.targetPlayerId === opponent.id)
-                  ? game.swapAnimation.targetCardIndex ?? null
-                // Hide card for _others swaps (both targets)
-                : (game.swapAnimation?.phase === 'animating' && 
-                   game.swapAnimation.secondTargetPlayerId === opponent.id)
-                  ? game.swapAnimation.secondTargetCardIndex ?? null
+                // Hide card during stack race (opponent's card being stacked)
+                (() => {
+                  // Check stack race first
+                  if (game.stackRaceAnimation && game.stackRaceAnimation.phase !== 'completed') {
+                    const opponentStack = game.stackRaceAnimation.stacks.find(s => 
+                      s.targetPlayerId === opponent.id
+                    );
+                    if (opponentStack) return opponentStack.targetCardIndex ?? null;
+                    // Also check if opponent is stacking their own card
+                    const selfStack = game.stackRaceAnimation.stacks.find(s => 
+                      s.playerId === opponent.id && !s.targetPlayerId
+                    );
+                    if (selfStack) return selfStack.playerCardIndex;
+                  }
+                  // Legacy stack animation
+                  if (game.stackAnimation && 
+                      game.stackAnimation.phase !== 'completed' &&
+                      game.stackAnimation.stacks[0]?.targetPlayerId === opponent.id) {
+                    return game.stackAnimation.stacks[0]?.targetCardIndex ?? null;
+                  }
+                  // NOTE: For power-up swap animations (9/10), we NO LONGER hide the cards
+                  // Instead, they wiggle in place via isSwapAnimating prop
                 // Hide card during give animation (target is receiving)
-                : (game.cardMoveAnimation?.type === 'give' && 
-                   game.cardMoveAnimation.targetPlayerId === opponent.id)
-                  ? game.cardMoveAnimation.targetHandIndex ?? null
+                  if (game.cardMoveAnimation?.type === 'give' && 
+                      game.cardMoveAnimation.targetPlayerId === opponent.id) {
+                    return game.cardMoveAnimation.targetHandIndex ?? null;
+                  }
                 // Hide card during swap animation for this opponent  
-                : (game.cardMoveAnimation?.type === 'swap' && 
-                   game.cardMoveAnimation.playerId === opponent.id)
-                  ? game.cardMoveAnimation.handIndex ?? null
-                  : null
+                  if (game.cardMoveAnimation?.type === 'swap' && 
+                      game.cardMoveAnimation.playerId === opponent.id) {
+                    return game.cardMoveAnimation.handIndex ?? null;
+                  }
+                  return null;
+                })()
               }
+              isSwapAnimating={game.swapAnimation?.phase === 'animating'}
             />
           </div>
         );
@@ -1782,10 +1891,10 @@ export function GameTable() {
 
       {/* Fixed bottom bar - Player's hand and action buttons */}
       <div className={`fixed bottom-0 left-0 right-0 z-30 bg-gradient-to-t from-emerald-950/95 via-emerald-950/80 to-transparent ${isMobile ? 'pb-2 pt-6' : 'pb-4 pt-8'}`}>
-        {/* My hand at bottom */}
-        {myPlayer && (
+      {/* My hand at bottom */}
+      {myPlayer && (
           <div ref={myHandRef} className={`flex justify-center overflow-visible ${isMobile ? 'mb-1' : 'mb-2'}`}>
-            <PlayerHand
+          <PlayerHand
             player={myPlayer}
             isCurrentPlayer={isMyTurn}
             isMyHand={true}
@@ -1794,8 +1903,9 @@ export function GameTable() {
             showBottomCards={isViewingMyCards}
             position="bottom"
             powerUpHighlight={
-              // Highlight for card give selection after stacking opponent
-              (game.stackAnimation?.result?.awaitingCardGive && game.stackAnimation.result.stackerId === peerId)
+              // Highlight for card give selection after stacking opponent (check both legacy and race)
+              ((game.stackAnimation?.result?.awaitingCardGive && game.stackAnimation.result.stackerId === peerId) ||
+               (game.stackRaceAnimation?.awaitingCardGive && game.stackRaceAnimation.winnerId === peerId))
                 ? 'selectable'
                 : (game.turnPhase === 'power_up' && 
                    game.currentPowerUp && 
@@ -1826,69 +1936,80 @@ export function GameTable() {
                 : null
             }
             hiddenCardIndex={
-              // Hide card during stack animation (my card being stacked)
-              (game.stackAnimation && 
-               game.stackAnimation.phase !== 'completed' &&
-               game.stackAnimation.stacks[0]?.playerId === peerId &&
-               !game.stackAnimation.stacks[0]?.targetPlayerId) // Only if stacking my own card
-                ? game.stackAnimation.stacks[0]?.playerCardIndex ?? null
-              // Hide card during power-up swap animation (9/10 swaps)
-              : (game.swapAnimation?.phase === 'animating' && 
-               game.swapAnimation.sourcePlayerId === peerId &&
-               game.swapAnimation.sourceCardIndex !== undefined)
-                ? game.swapAnimation.sourceCardIndex
+              // Hide card during stack race animation (my card being stacked)
+              (() => {
+                // Check stack race first
+                if (game.stackRaceAnimation && game.stackRaceAnimation.phase !== 'completed') {
+                  const myStack = game.stackRaceAnimation.stacks.find(s => 
+                    s.playerId === peerId && !s.targetPlayerId
+                  );
+                  if (myStack) return myStack.playerCardIndex;
+                }
+                // Legacy stack animation
+                if (game.stackAnimation && 
+                    game.stackAnimation.phase !== 'completed' &&
+                    game.stackAnimation.stacks[0]?.playerId === peerId &&
+                    !game.stackAnimation.stacks[0]?.targetPlayerId) {
+                  return game.stackAnimation.stacks[0]?.playerCardIndex ?? null;
+                }
+                // NOTE: For power-up swap animations (9/10), we NO LONGER hide the cards
+                // Instead, they wiggle in place via isSwapAnimating prop
               // Hide card during regular swap animation (my card being swapped out)
-              : cardMoveAnim.type === 'swap_cards' ? cardMoveAnim.handIndex 
+                if (cardMoveAnim.type === 'swap_cards') return cardMoveAnim.handIndex;
               // Hide card during give animation (I'm giving a card)
-              : (game.cardMoveAnimation?.type === 'give' && 
-                 game.cardMoveAnimation.playerId === peerId)
-                ? game.cardMoveAnimation.handIndex ?? null
-                : null
+                if (game.cardMoveAnimation?.type === 'give' && 
+                    game.cardMoveAnimation.playerId === peerId) {
+                  return game.cardMoveAnimation.handIndex ?? null;
+                }
+                return null;
+              })()
             }
-            />
-          </div>
-        )}
+            isSwapAnimating={game.swapAnimation?.phase === 'animating'}
+          />
+        </div>
+      )}
 
         {/* Action buttons - positioned next to hand */}
         <div className={`flex justify-center items-center gap-3 ${isMobile ? 'mt-1' : 'mt-2'}`}>
-          {game.phase === 'viewing_cards' && isViewingMyCards && (
-            <motion.button
-              initial={{ scale: 0 }}
-              animate={{ scale: 1 }}
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={handleReadyClick}
+        {game.phase === 'viewing_cards' && isViewingMyCards && (
+          <motion.button
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={handleReadyClick}
               className={`bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-shadow ${isMobile ? 'px-6 py-3 text-base' : 'px-8 py-4 text-lg'}`}
-            >
-              Ready!
-            </motion.button>
-          )}
+          >
+            Ready!
+          </motion.button>
+        )}
 
-          {allPlayersReady && (game.phase === 'playing' || game.phase === 'final_round') && (
-            <motion.button
-              initial={{ scale: 0 }}
-              animate={{ scale: 1 }}
-              whileHover={isMyTurn && game.turnPhase === 'draw' && !game.redsCallerId ? { scale: 1.05 } : {}}
-              whileTap={isMyTurn && game.turnPhase === 'draw' && !game.redsCallerId ? { scale: 0.95 } : {}}
-              onClick={handleCallReds}
-              disabled={!isMyTurn || game.turnPhase !== 'draw' || !!game.redsCallerId}
+        {allPlayersReady && (game.phase === 'playing' || game.phase === 'final_round') && (
+          <motion.button
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            whileHover={isMyTurn && game.turnPhase === 'draw' && !game.redsCallerId ? { scale: 1.05 } : {}}
+            whileTap={isMyTurn && game.turnPhase === 'draw' && !game.redsCallerId ? { scale: 0.95 } : {}}
+            onClick={handleCallReds}
+            disabled={!isMyTurn || game.turnPhase !== 'draw' || !!game.redsCallerId}
               className={`font-semibold rounded-lg shadow-md transition-all ${isMobile ? 'px-3 py-1.5 text-xs' : 'px-4 py-2 text-sm'} ${
-                isMyTurn && game.turnPhase === 'draw' && !game.redsCallerId
-                  ? 'bg-gradient-to-r from-red-500 to-rose-600 text-white hover:shadow-lg cursor-pointer'
-                  : game.redsCallerId
-                    ? 'bg-gray-700/50 text-gray-500 cursor-not-allowed line-through'
-                    : 'bg-gray-600/50 text-gray-400 cursor-not-allowed'
-              }`}
-            >
-              {game.redsCallerId ? 'REDS Called!' : 'REDS!'}
-            </motion.button>
-          )}
+              isMyTurn && game.turnPhase === 'draw' && !game.redsCallerId
+                ? 'bg-gradient-to-r from-red-500 to-rose-600 text-white hover:shadow-lg cursor-pointer'
+                : game.redsCallerId
+                  ? 'bg-gray-700/50 text-gray-500 cursor-not-allowed line-through'
+                  : 'bg-gray-600/50 text-gray-400 cursor-not-allowed'
+            }`}
+          >
+            {game.redsCallerId ? 'REDS Called!' : 'REDS!'}
+          </motion.button>
+        )}
         </div>
       </div>
 
       {/* Subtle "give a card" prompt (no background dim) */}
       <AnimatePresence>
-        {game.stackAnimation?.result?.awaitingCardGive && game.stackAnimation.result.stackerId === peerId && (
+        {((game.stackAnimation?.result?.awaitingCardGive && game.stackAnimation.result.stackerId === peerId) ||
+          (game.stackRaceAnimation?.awaitingCardGive && game.stackRaceAnimation.winnerId === peerId)) && (
           <motion.div
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1960,6 +2081,94 @@ export function GameTable() {
                 </>
               )}
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* PROMINENT REDS CALL NOTIFICATION - Full screen overlay */}
+      <AnimatePresence>
+        {redsNotification && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none"
+          >
+            {/* Background pulse effect */}
+            <motion.div
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ 
+                scale: [1, 1.1, 1],
+                opacity: [0.3, 0.5, 0.3]
+              }}
+              transition={{ 
+                duration: 1.5,
+                repeat: 2,
+                ease: "easeInOut"
+              }}
+              className="absolute inset-0 bg-gradient-to-br from-red-600/30 to-rose-600/30"
+            />
+            
+            {/* Main notification card */}
+            <motion.div
+              initial={{ scale: 0.5, y: 50, rotateX: -20 }}
+              animate={{ 
+                scale: 1, 
+                y: 0, 
+                rotateX: 0,
+              }}
+              transition={{ 
+                type: "spring",
+                stiffness: 200,
+                damping: 15
+              }}
+              className="relative bg-gradient-to-br from-red-600 to-rose-700 rounded-3xl p-8 shadow-2xl shadow-red-500/50 border-4 border-red-400"
+            >
+              {/* Animated glow */}
+              <motion.div
+                animate={{ 
+                  boxShadow: [
+                    '0 0 30px 10px rgba(239, 68, 68, 0.4)',
+                    '0 0 60px 20px rgba(239, 68, 68, 0.6)',
+                    '0 0 30px 10px rgba(239, 68, 68, 0.4)'
+                  ]
+                }}
+                transition={{ duration: 1, repeat: Infinity }}
+                className="absolute inset-0 rounded-3xl"
+              />
+              
+              <div className="relative z-10 text-center">
+                {/* Big REDS text */}
+                <motion.div
+                  animate={{ scale: [1, 1.1, 1] }}
+                  transition={{ duration: 0.5, repeat: 3 }}
+                  className="text-6xl sm:text-7xl md:text-8xl font-black text-white mb-2 drop-shadow-lg"
+                  style={{ textShadow: '0 0 30px rgba(255,255,255,0.5)' }}
+                >
+                  🚨 REDS! 🚨
+                </motion.div>
+                
+                {/* Player name */}
+                <motion.p
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="text-2xl sm:text-3xl font-bold text-red-100 mb-4"
+                >
+                  {redsNotification.isMe ? 'You called' : `${redsNotification.playerName} called`} REDS!
+                </motion.p>
+                
+                {/* Final round message */}
+                <motion.p
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.5 }}
+                  className="text-lg sm:text-xl text-red-200 font-medium"
+                >
+                  ⚡ Everyone else gets ONE final turn! ⚡
+                </motion.p>
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -2116,166 +2325,80 @@ export function GameTable() {
       </AnimatePresence>
 
       {/* Power-Up Swap Animation Overlay - visible to all players via synced game state */}
+      {/* Shows a "SWAP!" banner - the actual card wiggle is handled by PlayerHand/OpponentHand */}
       <AnimatePresence>
         {game.swapAnimation && game.swapAnimation.phase === 'animating' && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-40 pointer-events-none"
+            className="fixed inset-0 z-40 pointer-events-none flex items-center justify-center"
           >
-            {/* Subtle backdrop */}
+            {/* Swap notification banner */}
             <motion.div 
-              className="absolute inset-0 bg-black/30"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-            />
-            
-            {/* Cards moving across the table */}
-            <div className="absolute inset-0">
-              {/* First card - starts from source position, moves to target position */}
+              initial={{ scale: 0.5, opacity: 0, y: -20 }}
+              animate={{ 
+                scale: [0.5, 1.2, 1],
+                opacity: 1,
+                y: 0,
+                rotate: [0, -5, 5, -3, 3, 0]
+              }}
+              exit={{ scale: 0.5, opacity: 0, y: 20 }}
+              transition={{ 
+                duration: 0.6,
+                rotate: { duration: 0.5, delay: 0.2 }
+              }}
+              className="bg-gradient-to-r from-emerald-500 to-teal-500 px-8 py-4 rounded-2xl shadow-2xl shadow-emerald-500/50 border-4 border-emerald-300"
+            >
+              <div className="flex items-center gap-4">
+                <motion.span 
+                  animate={{ rotate: [0, 20, -20, 0] }}
+                  transition={{ duration: 0.5, repeat: 2 }}
+                  className="text-4xl"
+                >
+                  🔀
+                </motion.span>
+                <div className="text-center">
+                  <motion.div 
+                    animate={{ scale: [1, 1.1, 1] }}
+                    transition={{ duration: 0.3, repeat: 3 }}
+                    className="text-3xl sm:text-4xl font-black text-white drop-shadow-lg"
+                  >
+                    SWAP!
+                  </motion.div>
+                  <div className="text-emerald-100 text-sm font-medium mt-1">
               {(() => {
-                // Determine if this is a regular swap (me <-> opponent) or others swap (opponent <-> opponent)
                 const isOthersSwap = game.swapAnimation.type === 'blind_swap_others' || game.swapAnimation.type === 'inspect_swap_others';
-                
-                // Use coordinate system for precise positions
-                const sourcePlayerIdx = game.players.findIndex(p => p.id === game.swapAnimation?.sourcePlayerId);
-                const targetPlayerIdx = game.players.findIndex(p => p.id === game.swapAnimation?.targetPlayerId);
-                const secondTargetPlayerIdx = game.players.findIndex(p => p.id === game.swapAnimation?.secondTargetPlayerId);
-                
-                // Get precise card positions from the coordinate system
-                const sourceCardPos = isOthersSwap && targetPlayerIdx >= 0
-                  ? cardPositions.getPlayerCardPosition(targetPlayerIdx, game.swapAnimation.targetCardIndex ?? 0)
-                  : (sourcePlayerIdx >= 0 && game.swapAnimation.sourceCardIndex !== undefined
-                    ? cardPositions.getPlayerCardPosition(sourcePlayerIdx, game.swapAnimation.sourceCardIndex)
-                    : null);
-                    
-                const targetCardPos = isOthersSwap && secondTargetPlayerIdx >= 0
-                  ? cardPositions.getPlayerCardPosition(secondTargetPlayerIdx, game.swapAnimation.secondTargetCardIndex ?? 0)
-                  : (targetPlayerIdx >= 0
-                    ? cardPositions.getPlayerCardPosition(targetPlayerIdx, game.swapAnimation.targetCardIndex ?? 0)
-                    : null);
-                
-                // Fallback positions if coordinate system doesn't have them
-                const sourcePos = sourceCardPos || { x: '50%', y: '85%' };
-                const targetPos = targetCardPos || { x: '50%', y: '15%' };
-                
                 const sourceName = isOthersSwap
                   ? game.players.find(p => p.id === game.swapAnimation?.targetPlayerId)?.name
                   : game.players.find(p => p.id === game.swapAnimation?.sourcePlayerId)?.name || game.swapAnimation.playerName;
-                  
                 const targetName = isOthersSwap
                   ? game.players.find(p => p.id === game.swapAnimation?.secondTargetPlayerId)?.name
                   : game.players.find(p => p.id === game.swapAnimation?.targetPlayerId)?.name;
-                
-                const centerPos = { x: '50%', y: '50%' };
-                return (
-                  <>
-                    {/* First card moves from source to target */}
-                    <motion.div
-                      initial={{ 
-                        left: sourcePos.x,
-                        top: sourcePos.y,
-                        x: '-50%',
-                        y: '-50%',
-                        scale: 1,
-                        opacity: 1,
-                      }}
-                      animate={{ 
-                        left: [sourcePos.x, centerPos.x, targetPos.x],
-                        top: [sourcePos.y, centerPos.y, targetPos.y],
-                        x: '-50%',
-                        y: '-50%',
-                        scale: [1, 1.3, 1],
-                        opacity: [1, 1, 0.9],
-                      }}
-                      transition={{ 
-                        duration: 1.0,
-                        ease: 'easeInOut',
-                        times: [0, 0.5, 1],
-                      }}
-                      className="absolute"
-                    >
-                      <div className="rounded-xl ring-4 ring-emerald-400 shadow-[0_0_30px_rgba(52,211,153,0.8)]">
-                        <Card 
-                          card={{ 
-                            id: 'swap-card-1', 
-                            suit: 'spades', 
-                            rank: 'A', 
-                            faceUp: false 
-                          }} 
-                          size="md"
-                        />
+                      return `${sourceName} ↔ ${targetName}`;
+                    })()}
                       </div>
-                      <motion.div
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        transition={{ delay: 0.1 }}
-                        className="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap"
-                      >
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-600/90 text-white shadow-lg">
-                          {sourceName}
-                        </span>
-                      </motion.div>
-                    </motion.div>
-                    
-                    {/* Second card moves from target to source */}
-                    <motion.div
-                      initial={{ 
-                        left: targetPos.x,
-                        top: targetPos.y,
-                        x: '-50%',
-                        y: '-50%',
-                        scale: 1,
-                        opacity: 1,
-                      }}
-                      animate={{ 
-                        left: [targetPos.x, centerPos.x, sourcePos.x],
-                        top: [targetPos.y, centerPos.y, sourcePos.y],
-                        x: '-50%',
-                        y: '-50%',
-                        scale: [1, 1.3, 1],
-                        opacity: [1, 1, 0.9],
-                      }}
-                      transition={{ 
-                        duration: 1.0,
-                        ease: 'easeInOut',
-                        times: [0, 0.5, 1],
-                      }}
-                      className="absolute"
-                    >
-                      <div className="rounded-xl ring-4 ring-emerald-400 shadow-[0_0_30px_rgba(52,211,153,0.8)]">
-                        <Card 
-                          card={{ 
-                            id: 'swap-card-2', 
-                            suit: 'hearts', 
-                            rank: 'K', 
-                            faceUp: false 
-                          }} 
-                          size="md"
-                        />
                       </div>
-                      <motion.div
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        transition={{ delay: 0.1 }}
-                        className="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap"
-                      >
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-600/90 text-white shadow-lg">
-                          {targetName}
-                        </span>
-                      </motion.div>
-                    </motion.div>
-                  </>
-                );
-              })()}
+                <motion.span 
+                  animate={{ rotate: [0, -20, 20, 0] }}
+                  transition={{ duration: 0.5, repeat: 2 }}
+                  className="text-4xl"
+                >
+                  🔀
+                </motion.span>
             </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
 
       {/* Stack Animation Overlay - Point-to-Point Animation */}
+      {/* Animation sequence:
+          1. Card disappears from original spot (handled by hiddenCardIndex)
+          2. Card value (face UP) appears at original spot and flies to discard
+          3. If valid stack - card stays at discard
+          4. If invalid - card flies back to original spot, then reappears as face-down
+      */}
       <AnimatePresence>
         {game.stackAnimation && game.stackAnimation.stacks.length > 0 && (() => {
           const stack = game.stackAnimation.stacks[0];
@@ -2289,97 +2412,85 @@ export function GameTable() {
           const phase = game.stackAnimation.phase;
           const result = game.stackAnimation.result;
           
-          // Calculate animation target based on phase
-          const getAnimationTarget = () => {
-            if (phase === 'flying_to_discard') {
-              return { x: discardPos.x, y: discardPos.y };
-            }
-            if (phase === 'flying_back' && sourcePos) {
-              return { x: sourcePos.x, y: sourcePos.y };
-            }
-            // showing_result or completed - stay at discard
-            return { x: discardPos.x, y: discardPos.y };
-          };
+          // Don't show overlay when awaiting card give - let player interact with their hand
+          if (result?.awaitingCardGive) return null;
           
-          const target = getAnimationTarget();
+          // Determine current position based on phase
+          // flying_to_discard: start at source, animate to discard
+          // showing_result: stay at discard (success) or start flying back (failure)
+          // flying_back: animate from discard back to source
+          const isAtSource = phase === 'flying_to_discard';
+          const isAtDiscard = phase === 'showing_result' && result?.success;
+          const isFlyingBack = phase === 'flying_back' || (phase === 'showing_result' && result?.success === false);
+          
+          // Card offset for centering (half of card dimensions)
+          const cardOffsetX = 40;
+          const cardOffsetY = 56;
           
           return (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
               className={`fixed inset-0 z-40 pointer-events-none ${
-                result?.awaitingCardGive ? 'bg-transparent' : phase === 'flying_back' ? 'bg-black/40' : 'bg-black/60'
-              }`}
-            >
-              {/* Flying card animation */}
+                isFlyingBack ? 'bg-black/40' : 'bg-black/60'
+            }`}
+          >
+              {/* Flying card - ALWAYS face up (value exposed) */}
               <motion.div
                 initial={{ 
-                  x: sourcePos.x - 40, // Offset for card center (half of lg card width ~80px)
-                  y: sourcePos.y - 56, // Offset for card center (half of lg card height ~112px)
-                  scale: 0.8,
+                  x: sourcePos.x - cardOffsetX,
+                  y: sourcePos.y - cardOffsetY,
+                  scale: 1,
                   rotate: 0,
                 }}
                 animate={{ 
-                  x: phase === 'flying_back' ? sourcePos.x - 40 : target.x - 40,
-                  y: phase === 'flying_back' ? sourcePos.y - 56 : target.y - 56,
-                  scale: phase === 'flying_to_discard' ? 1.2 : 1,
-                  rotate: phase === 'flying_to_discard' ? [0, -5, 5, 0] : 0,
+                  x: isFlyingBack ? sourcePos.x - cardOffsetX : discardPos.x - cardOffsetX,
+                  y: isFlyingBack ? sourcePos.y - cardOffsetY : discardPos.y - cardOffsetY,
+                  scale: phase === 'flying_to_discard' ? [1, 1.15, 1.1] : isFlyingBack ? 1 : 1.1,
+                  rotate: phase === 'flying_to_discard' ? [0, -3, 3, 0] : 0,
                 }}
                 transition={{ 
-                  duration: phase === 'flying_back' ? 0.6 : 0.5,
-                  ease: phase === 'flying_back' ? 'easeOut' : 'easeInOut',
+                  duration: isFlyingBack ? 0.5 : 0.6,
+                  ease: isFlyingBack ? 'easeIn' : 'easeOut',
                 }}
                 className="absolute pointer-events-auto"
                 style={{ zIndex: 100 }}
               >
                 <div className="relative">
-                  {/* Card back - squeezes out during flip */}
-                  <motion.div
-                    initial={{ scaleX: 1, opacity: 1 }}
+                  {/* Card - ALWAYS face up during animation */}
+                <motion.div
+                    initial={{ opacity: 1 }}
                     animate={{ 
-                      scaleX: phase !== 'flying_to_discard' ? 0 : 1,
-                      opacity: phase !== 'flying_to_discard' ? 0 : 1,
+                      opacity: 1,
                     }}
-                    transition={{ duration: 0.25, ease: 'easeIn', delay: phase === 'flying_to_discard' ? 0.3 : 0 }}
-                    style={{ transformOrigin: 'center' }}
-                    className={phase !== 'flying_to_discard' ? 'absolute inset-0' : ''}
+                  style={{ transformOrigin: 'center' }}
                   >
-                    <div className={`rounded-xl ${phase === 'flying_to_discard' ? 'ring-4 ring-yellow-400 shadow-[0_0_30px_rgba(250,204,21,0.8)]' : ''}`}>
-                      <Card 
-                        card={{ ...stack.card, faceUp: false }} 
-                        size="lg"
-                      />
-                    </div>
-                  </motion.div>
-                  
-                  {/* Card front - expands in after flip */}
-                  <motion.div
-                    initial={{ scaleX: 0, opacity: 0 }}
-                    animate={{ 
-                      scaleX: phase !== 'flying_to_discard' ? 1 : 0,
-                      opacity: phase !== 'flying_to_discard' ? 1 : 0,
-                    }}
-                    transition={{ duration: 0.25, ease: 'easeOut', delay: phase === 'flying_to_discard' ? 0 : 0.25 }}
-                    style={{ transformOrigin: 'center' }}
-                  >
-                    <div className={`rounded-xl ${result?.success ? 'ring-4 ring-green-400 shadow-[0_0_30px_rgba(34,197,94,0.8)]' : result?.success === false ? 'ring-4 ring-red-500 shadow-[0_0_30px_rgba(239,68,68,0.8)]' : ''}`}>
-                      <Card 
+                    <div className={`rounded-xl transition-all duration-300 ${
+                      phase === 'flying_to_discard' 
+                        ? 'ring-4 ring-yellow-400 shadow-[0_0_30px_rgba(250,204,21,0.8)]' 
+                        : result?.success 
+                          ? 'ring-4 ring-green-400 shadow-[0_0_30px_rgba(34,197,94,0.8)]' 
+                          : result?.success === false 
+                            ? 'ring-4 ring-red-500 shadow-[0_0_30px_rgba(239,68,68,0.8)]' 
+                            : ''
+                    }`}>
+                  <Card 
                         card={{ ...stack.card, faceUp: true }} 
-                        size="lg"
-                      />
+                    size="lg"
+                  />
                     </div>
-                  </motion.div>
-                  
-                  {/* Player name badge */}
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.2 }}
+                </motion.div>
+                
+                {/* Player name badge */}
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.1 }}
                     className="absolute -bottom-8 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap bg-emerald-600 text-white shadow-lg"
-                  >
+                >
                     {stack.playerName}
-                  </motion.div>
+                </motion.div>
                 </div>
               </motion.div>
               
@@ -2390,7 +2501,7 @@ export function GameTable() {
                     initial={{ scale: 0, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
                     exit={{ scale: 0, opacity: 0 }}
-                    transition={{ type: 'spring', stiffness: 300, damping: 20, delay: 0.3 }}
+                    transition={{ type: 'spring', stiffness: 300, damping: 20, delay: 0.2 }}
                     className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
                   >
                     {result.success ? (
@@ -2434,7 +2545,7 @@ export function GameTable() {
                   </span>
                 </motion.div>
               )}
-            </motion.div>
+          </motion.div>
           );
         })()}
       </AnimatePresence>
@@ -2449,84 +2560,323 @@ export function GameTable() {
         <StackAnimationClearer />
       )}
 
-      {/* Penalty Card Display Overlay - visible to ALL players */}
+      {/* Stack Race Animation - Multiple players stacking simultaneously */}
+      {game.stackRaceAnimation && game.stackRaceAnimation.phase === 'collecting' && (
+        <StackRaceResolver />
+      )}
+      {game.stackRaceAnimation && game.stackRaceAnimation.phase === 'resolving' && !game.stackRaceAnimation.awaitingCardGive && (
+        <StackRaceClearer />
+      )}
+      
       <AnimatePresence>
-        {game.penaltyCardDisplay && (
+        {game.stackRaceAnimation && game.stackRaceAnimation.stacks.length > 0 && (() => {
+          const race = game.stackRaceAnimation;
+          const discardPos = race.discardPosition || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+          const isResolved = race.phase === 'resolving';
+          const isAwaitingGive = race.awaitingCardGive;
+          const cardOffsetX = 40;
+          const cardOffsetY = 56;
+          
+          // Don't show overlay when awaiting card give - let player interact with their hand
+          if (isAwaitingGive) return null;
+          
+          return (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/70 flex items-center justify-center z-50"
-            onClick={clearPenaltyCardDisplay}
-          >
-            <motion.div
-              initial={{ scale: 0.5, y: 50 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.5, y: 50, opacity: 0 }}
-              transition={{ type: 'spring', stiffness: 200, damping: 20 }}
-              className="flex flex-col items-center gap-4"
-              onClick={(e) => e.stopPropagation()}
+              className="fixed inset-0 z-40 pointer-events-none bg-black/60"
             >
-              {/* Title */}
+              {/* Multiple flying cards */}
+              {race.stacks.map((stack, stackIndex) => {
+                const result = race.results[stack.playerId];
+                const sourcePos = stack.sourcePosition || { x: window.innerWidth / 2, y: window.innerHeight };
+                
+                // Determine animation phase
+                const isWinner = isResolved && result?.isWinner;
+                const isMisstack = isResolved && result && !result.success; // Wrong card
+                const isTooSlow = isResolved && result && result.success && !result.isWinner; // Right card but too slow
+                const shouldFlyBack = isResolved && !isWinner; // All non-winners fly back
+                
+                // Stagger positions at discard pile to show stack order
+                const stackOffset = stackIndex * 8;
+                
+                return (
+            <motion.div
+                    key={`${stack.playerId}-${stack.timestamp}`}
+                    initial={{ 
+                      x: sourcePos.x - cardOffsetX,
+                      y: sourcePos.y - cardOffsetY,
+                      scale: 1,
+                      rotate: 0,
+                    }}
+                    animate={{ 
+                      x: shouldFlyBack 
+                        ? sourcePos.x - cardOffsetX 
+                        : discardPos.x - cardOffsetX + stackOffset,
+                      y: shouldFlyBack 
+                        ? sourcePos.y - cardOffsetY 
+                        : discardPos.y - cardOffsetY + stackOffset,
+                      scale: isResolved ? (isWinner ? 1.15 : 1) : 1.1,
+                      rotate: isResolved ? 0 : [0, -3, 3, 0],
+                      zIndex: isWinner ? 100 : 50 - stackIndex,
+                    }}
+                    transition={{ 
+                      duration: shouldFlyBack ? 0.5 : 0.6,
+                      ease: shouldFlyBack ? 'easeIn' : 'easeOut',
+                      delay: stackIndex * 0.05, // Stagger by timestamp order
+                    }}
+                    className="absolute pointer-events-auto"
+                    style={{ zIndex: isWinner ? 100 : 50 - stackIndex }}
+                  >
+                    <div className="relative">
               <motion.div
-                initial={{ y: -20, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                transition={{ delay: 0.2 }}
-                className="text-center"
-              >
-                <div className="text-red-500 text-2xl font-black mb-1">❌ MISSTACK!</div>
-                <div className="text-white text-lg">
-                  <span className="font-bold text-amber-400">{game.penaltyCardDisplay.playerName}</span> drew a penalty card:
+                        animate={{ 
+                          opacity: shouldFlyBack ? [1, 1, 0.8] : 1,
+                        }}
+                        transition={{ duration: 0.3, delay: shouldFlyBack ? 0.5 : 0 }}
+                      >
+                        <div className={`rounded-xl transition-all duration-300 ${
+                          !isResolved
+                            ? 'ring-4 ring-yellow-400 shadow-[0_0_30px_rgba(250,204,21,0.8)]' 
+                            : isWinner 
+                              ? 'ring-4 ring-green-400 shadow-[0_0_30px_rgba(34,197,94,0.8)]' 
+                              : isMisstack
+                                ? 'ring-4 ring-red-500 shadow-[0_0_30px_rgba(239,68,68,0.8)]'
+                                : isTooSlow
+                                  ? 'ring-4 ring-amber-400 shadow-[0_0_20px_rgba(251,191,36,0.6)]' // Too slow - amber/yellow
+                                  : 'ring-4 ring-gray-400'
+                        }`}>
+                          <Card 
+                            card={{ ...stack.card, faceUp: true }} 
+                            size="lg"
+                          />
                 </div>
               </motion.div>
               
-              {/* The penalty card - face up for everyone to see */}
+                      {/* Player name badge */}
               <motion.div
-                initial={{ rotateY: 180, scale: 0.8 }}
-                animate={{ rotateY: 0, scale: 1.5 }}
-                transition={{ type: 'spring', stiffness: 150, damping: 15, delay: 0.3 }}
-                className="relative"
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.1 + stackIndex * 0.05 }}
+                        className={`absolute -bottom-8 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap shadow-lg ${
+                          isWinner 
+                            ? 'bg-green-600 text-white' 
+                            : isMisstack 
+                              ? 'bg-red-600 text-white' 
+                              : isTooSlow 
+                                ? 'bg-amber-500 text-amber-950' // Too slow - no penalty
+                                : 'bg-emerald-600 text-white'
+                        }`}
+                      >
+                        {stack.playerName}
+                        {isWinner && ' 🏆'}
+                        {isMisstack && ' ❌ +1'}
+                        {isTooSlow && ' ⏱️'}
+                      </motion.div>
+                      
+                      {/* Timestamp indicator (subtle) */}
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 0.6 }}
+                        className="absolute -top-6 left-1/2 -translate-x-1/2 text-[10px] text-white/60 font-mono"
+                      >
+                        #{stackIndex + 1}
+                      </motion.div>
+                    </div>
+                  </motion.div>
+                );
+              })}
+              
+              {/* Race status text */}
+              <motion.div
+                initial={{ scale: 0, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0, opacity: 0 }}
+                className="absolute top-1/4 left-1/2 -translate-x-1/2 pointer-events-none"
               >
-                <Card 
-                  card={game.penaltyCardDisplay.card} 
-                  size="xl"
-                />
-                {/* Glow effect */}
+                <span className={`text-4xl sm:text-5xl font-black drop-shadow-lg tracking-wider ${
+                  !isResolved 
+                    ? 'text-yellow-400' 
+                    : race.winnerId 
+                      ? 'text-green-400' 
+                      : 'text-red-400'
+                }`}>
+                  {!isResolved 
+                    ? `STACK RACE! (${race.stacks.length} player${race.stacks.length > 1 ? 's' : ''})` 
+                    : race.winnerId 
+                      ? `${race.stacks.find(s => s.playerId === race.winnerId)?.playerName} STACKED!`
+                      : 'ALL MISSTACKS!'
+                  }
+                </span>
+              </motion.div>
+              
+              {/* Result indicators */}
+              {isResolved && (
                 <motion.div
+                  initial={{ scale: 0, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  transition={{ delay: 0.5 }}
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+                >
+                  {race.winnerId ? (
+                    <div className="flex flex-col items-center gap-2 bg-black/50 px-8 py-6 rounded-2xl backdrop-blur-sm">
+                      <motion.div 
+                        className="text-7xl sm:text-8xl text-green-500 font-black drop-shadow-lg"
+                        animate={{ scale: [1, 1.2, 1] }}
+                        transition={{ duration: 0.5 }}
+                      >
+                        ✓
+                      </motion.div>
+                      <span className="text-xl sm:text-2xl font-bold text-green-400">STACK SUCCESS!</span>
+                      {race.stacks.length > 1 && (
+                        <span className="text-sm text-green-300">
+                          {race.stacks.find(s => s.playerId === race.winnerId)?.playerName} was fastest!
+                        </span>
+                      )}
+                      {/* Show who else had the right card but was too slow */}
+                      {(() => {
+                        const tooSlowPlayers = race.stacks.filter(s => 
+                          race.results[s.playerId]?.success && !race.results[s.playerId]?.isWinner
+                        );
+                        if (tooSlowPlayers.length > 0) {
+                          return (
+                            <span className="text-xs text-amber-300 mt-1">
+                              {tooSlowPlayers.map(s => s.playerName).join(', ')} had it too but were slower
+                            </span>
+                          );
+                        }
+                        return null;
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-2 bg-black/50 px-8 py-6 rounded-2xl backdrop-blur-sm">
+                      <motion.div 
+                        className="text-7xl sm:text-8xl text-red-500 font-black drop-shadow-lg"
+                        animate={{ scale: [1, 1.2, 1], rotate: [0, -5, 5, 0] }}
+                        transition={{ duration: 0.5 }}
+                      >
+                        ✗
+                      </motion.div>
+                      <span className="text-xl sm:text-2xl font-bold text-red-400">
+                        {race.stacks.length > 1 ? 'ALL MISSTACKS!' : 'MISSTACK!'}
+                      </span>
+                      <span className="text-xs sm:text-sm text-red-300">
+                        {race.stacks.filter(s => !race.results[s.playerId]?.success).length > 0 
+                          ? 'Wrong card = penalty card!' 
+                          : 'Drawing penalty cards...'}
+                      </span>
+                    </div>
+                  )}
+                </motion.div>
+              )}
+            </motion.div>
+          );
+        })()}
+      </AnimatePresence>
+
+      {/* Penalty Card Animation - shows face-down card flying from deck to player */}
+      <AnimatePresence>
+        {game.penaltyCardDisplay && (() => {
+          // Find the target player's position for the animation
+          const targetPlayerId = game.penaltyCardDisplay.playerId;
+          const targetPlayerIndex = game.players.findIndex(p => p.id === targetPlayerId);
+          const isMyPenalty = targetPlayerId === peerId;
+          
+          // Get deck position
+          const deckPos = cardPositions.deckPosition;
+          
+          // Get target position (player's hand)
+          let targetPos = { x: window.innerWidth / 2, y: window.innerHeight - 100 };
+          if (isMyPenalty) {
+            // My hand is at the bottom
+            targetPos = { x: window.innerWidth / 2, y: window.innerHeight - 80 };
+          } else if (targetPlayerIndex >= 0) {
+            // Opponent's position
+            const oppPos = cardPositions.getPlayerCardPosition(targetPlayerIndex, 0);
+            if (oppPos) {
+              targetPos = { x: oppPos.xPx, y: oppPos.yPx };
+            }
+          }
+          
+          return (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 pointer-events-none"
+            >
+              {/* Semi-transparent backdrop */}
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 0.5 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 bg-black"
+              />
+              
+              {/* Flying face-down card from deck to player */}
+                <motion.div
+                initial={{ 
+                  x: deckPos.xPx - 40,
+                  y: deckPos.yPx - 56,
+                  scale: 1,
+                  rotate: 0,
+                }}
                   animate={{ 
-                    boxShadow: ['0 0 20px rgba(239, 68, 68, 0.5)', '0 0 40px rgba(239, 68, 68, 0.8)', '0 0 20px rgba(239, 68, 68, 0.5)']
-                  }}
-                  transition={{ duration: 1.5, repeat: Infinity }}
-                  className="absolute inset-0 rounded-xl pointer-events-none"
-                />
-              </motion.div>
-
-              {/* Info text */}
+                  x: targetPos.x - 40,
+                  y: targetPos.y - 56,
+                  scale: [1, 1.2, 0.8],
+                  rotate: [0, -10, 10, 0],
+                }}
+                transition={{ 
+                  duration: 0.8,
+                  ease: 'easeInOut',
+                }}
+                className="absolute"
+                style={{ zIndex: 100 }}
+              >
+                <div className="relative">
+                  {/* Face-down card with red glow */}
+                  <div className="rounded-xl ring-4 ring-red-500 shadow-[0_0_30px_rgba(239,68,68,0.8)]">
+                    <Card 
+                      card={{ ...game.penaltyCardDisplay.card, faceUp: false }} 
+                      size="lg"
+                    />
+                  </div>
+                  
+                  {/* "PENALTY" label */}
               <motion.div
-                initial={{ y: 20, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                transition={{ delay: 0.5 }}
-                className="text-center text-gray-300 text-sm"
-              >
-                This card has been added to {game.penaltyCardDisplay.playerName}&apos;s hand
+                    initial={{ opacity: 0, scale: 0 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ delay: 0.2 }}
+                    className="absolute -top-6 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-red-600 text-white text-xs font-bold rounded-full whitespace-nowrap"
+                  >
+                    +1 PENALTY
+                  </motion.div>
+                </div>
               </motion.div>
 
-              {/* Dismiss button */}
-              <motion.button
-                initial={{ y: 20, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                transition={{ delay: 0.6 }}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={clearPenaltyCardDisplay}
-                className="px-6 py-2 bg-white/20 hover:bg-white/30 text-white font-medium rounded-lg transition-colors"
+              {/* Player name indicator */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.3 }}
+                className="absolute top-1/4 left-1/2 -translate-x-1/2 text-center"
               >
-                Continue
-              </motion.button>
+                <div className="text-red-400 text-xl font-bold">
+                  {game.penaltyCardDisplay.playerName} draws penalty card
+                </div>
+                <div className="text-gray-400 text-sm mt-1">
+                  (Card value is hidden)
+                </div>
             </motion.div>
           </motion.div>
-        )}
+          );
+        })()}
       </AnimatePresence>
+      
+      {/* Auto-clear penalty animation */}
+      {game.penaltyCardDisplay && <PenaltyAnimationClearer />}
 
       {/* Game over overlay - can be closed to inspect final hands */}
       <AnimatePresence>

@@ -10,6 +10,7 @@ import {
   PowerUpType,
   StackAction,
   StackAnimation,
+  StackRaceAnimation,
   SwapAnimation,
   calculateScore,
   cardsMatch,
@@ -58,8 +59,14 @@ interface GameStore {
   completePowerUp: (targetPlayerId?: string, targetCardIndex?: number, sourceCardIndex?: number, secondTargetPlayerId?: string, secondTargetCardIndex?: number) => void;
   cancelPowerUp: () => void;
   
-  // Stacking
-  attemptStack: (playerCardIndex: number, targetPlayerId?: string, targetCardIndex?: number) => void;
+  // Stacking (with race support)
+  attemptStack: (playerCardIndex: number, targetPlayerId?: string, targetCardIndex?: number, sourcePosition?: { x: number; y: number }) => void;
+  joinStackRace: (stackAction: StackAction) => void;
+  resolveStackRace: () => void;
+  setStackRaceDiscardPosition: (discardPos: { x: number; y: number }) => void;
+  updateStackRaceAnimationPhase: (playerId: string, phase: 'flying_to_discard' | 'at_discard' | 'flying_back' | 'done') => void;
+  clearStackRace: () => void;
+  // Legacy single-stack support
   setStackPositions: (sourcePos: { x: number; y: number }, discardPos: { x: number; y: number }) => void;
   setStackPhase: (phase: 'flying_to_discard' | 'showing_result' | 'flying_back' | 'completed') => void;
   resolveStackAnimation: () => void;
@@ -101,6 +108,7 @@ const initialGameState = (): GameState => ({
   currentPowerUp: null,
   pendingStacks: [],
   stackAnimation: null,
+  stackRaceAnimation: null,
   swapAnimation: null,
   lastDiscardWasStack: false,
   redsCallerId: null,
@@ -760,7 +768,7 @@ export const useGameStore = create<GameStore>()(
         }
       },
 
-      attemptStack: (playerCardIndex, targetPlayerId, targetCardIndex) => {
+      attemptStack: (playerCardIndex, targetPlayerId, targetCardIndex, sourcePosition) => {
         const { game, peerId } = get();
         if (!game || game.discardPile.length === 0) return;
 
@@ -776,18 +784,15 @@ export const useGameStore = create<GameStore>()(
           return;
         }
 
-        const topDiscard = game.discardPile[0];
         const currentPlayer = game.players.find(p => p.id === peerId);
         if (!currentPlayer) return;
 
         // Determine which card is being stacked
         let stackCard: Card;
-        let isStackingOpponentCard = false;
         if (targetPlayerId && targetCardIndex !== undefined) {
           const targetPlayer = game.players.find(p => p.id === targetPlayerId);
           if (!targetPlayer) return;
           stackCard = targetPlayer.cards[targetCardIndex];
-          isStackingOpponentCard = true;
         } else {
           stackCard = currentPlayer.cards[playerCardIndex];
         }
@@ -801,27 +806,293 @@ export const useGameStore = create<GameStore>()(
           targetPlayerId,
           targetCardIndex,
           timestamp,
+          sourcePosition: sourcePosition || { x: window.innerWidth / 2, y: window.innerHeight },
+          status: 'pending',
         };
 
-        // Check if cards match
-        const isMatch = cardsMatch(stackCard, topDiscard);
-
-        // Start the stack animation (show card flipping toward discard)
-        // Position data will be set by the UI component
+        // Check if there's already an ongoing stack race
+        const existingRace = game.stackRaceAnimation;
+        const RACE_WINDOW_MS = 600; // Time window to collect stacks
+        
+        if (existingRace && existingRace.phase === 'collecting') {
+          // Join existing race - add our stack attempt
+          const updatedStacks = [...existingRace.stacks, stackAction];
+          set({
+            game: {
+              ...game,
+              stackRaceAnimation: {
+                ...existingRace,
+                stacks: updatedStacks,
+              },
+              lastAction: `${currentPlayer.name} joined the stack race!`,
+              stateVersion: (game.stateVersion || 0) + 1,
+            },
+            selectedCardIndex: null,
+          });
+        } else {
+          // Start a new stack race
+          const newRace: StackRaceAnimation = {
+            stacks: [stackAction],
+            discardPosition: undefined,
+            phase: 'collecting',
+            raceWindowMs: RACE_WINDOW_MS,
+            startedAt: timestamp,
+            winnerId: null,
+            winnerCard: null,
+            results: {},
+          };
+          
+          set({
+            game: {
+              ...game,
+              stackRaceAnimation: newRace,
+              lastAction: `${currentPlayer.name} is attempting to stack...`,
+              stateVersion: (game.stateVersion || 0) + 1,
+            },
+            selectedCardIndex: null,
+          });
+        }
+      },
+      
+      joinStackRace: (stackAction) => {
+        const { game } = get();
+        if (!game) return;
+        
+        const existingRace = game.stackRaceAnimation;
+        if (!existingRace) {
+          // Start a new race with this action
+          const newRace: StackRaceAnimation = {
+            stacks: [stackAction],
+            discardPosition: undefined,
+            phase: 'collecting',
+            raceWindowMs: 600,
+            startedAt: stackAction.timestamp,
+            winnerId: null,
+            winnerCard: null,
+            results: {},
+          };
+          set({
+            game: {
+              ...game,
+              stackRaceAnimation: newRace,
+              lastAction: `${stackAction.playerName} is attempting to stack...`,
+              stateVersion: (game.stateVersion || 0) + 1,
+            },
+          });
+        } else {
+          // Add to existing race (avoid duplicates)
+          const alreadyInRace = existingRace.stacks.some(s => 
+            s.playerId === stackAction.playerId && s.timestamp === stackAction.timestamp
+          );
+          if (!alreadyInRace) {
+            set({
+              game: {
+                ...game,
+                stackRaceAnimation: {
+                  ...existingRace,
+                  stacks: [...existingRace.stacks, stackAction],
+                },
+                lastAction: `${stackAction.playerName} joined the stack race!`,
+                stateVersion: (game.stateVersion || 0) + 1,
+              },
+            });
+          }
+        }
+      },
+      
+      resolveStackRace: () => {
+        const { game, peerId } = get();
+        if (!game || !game.stackRaceAnimation) return;
+        
+        const race = game.stackRaceAnimation;
+        if (race.phase !== 'collecting' && race.phase !== 'racing') return;
+        
+        const topDiscard = game.discardPile[0];
+        
+        // Sort stacks by timestamp (earliest first)
+        const sortedStacks = [...race.stacks].sort((a, b) => a.timestamp - b.timestamp);
+        
+        // Find the first valid stack (matching card)
+        let winnerId: string | null = null;
+        let winnerCard: Card | null = null;
+        let winnerStack: StackAction | null = null;
+        
+        const results: StackRaceAnimation['results'] = {};
+        
+        for (const stack of sortedStacks) {
+          const isMatch = cardsMatch(stack.card, topDiscard);
+          const isWinner = isMatch && winnerId === null;
+          
+          if (isWinner) {
+            winnerId = stack.playerId;
+            winnerCard = stack.card;
+            winnerStack = stack;
+          }
+          
+          results[stack.playerId] = {
+            success: isMatch,
+            isWinner,
+            card: stack.card,
+            sourcePosition: stack.sourcePosition || { x: window.innerWidth / 2, y: window.innerHeight },
+            animationPhase: 'flying_to_discard',
+          };
+          
+          // Update stack status
+          stack.status = isWinner ? 'winner' : (isMatch ? 'loser' : 'invalid');
+        }
+        
+        // Update game state with resolved race
+        let updatedPlayers = [...game.players];
+        let updatedDiscardPile = [...game.discardPile];
+        let lastAction = '';
+        let awaitingCardGive = false;
+        
+        if (winnerStack && winnerId && winnerCard) {
+          // Check if stacking opponent's card (requires giving a card back)
+          const isStackingOpponentCard = winnerStack.targetPlayerId !== undefined;
+          
+          if (isStackingOpponentCard) {
+            // DON'T remove the card yet - wait for stacker to select which card to give
+            // The card will be removed in completeStackGive
+            awaitingCardGive = true;
+            lastAction = `${winnerStack.playerName} stacked ${game.players.find(p => p.id === winnerStack.targetPlayerId)?.name}'s card! Select a card to give.`;
+          } else {
+            // Stacking own card - remove it immediately
+            const winnerPlayerIdx = updatedPlayers.findIndex(p => p.id === winnerId);
+            if (winnerPlayerIdx >= 0) {
+              const winnerPlayer = { ...updatedPlayers[winnerPlayerIdx] };
+              winnerPlayer.cards = winnerPlayer.cards.filter((_, i) => i !== winnerStack.playerCardIndex);
+              updatedPlayers[winnerPlayerIdx] = winnerPlayer;
+            }
+            
+            // Add winning card to discard pile
+            const cardToDiscard: Card = { ...winnerCard, faceUp: true };
+            updatedDiscardPile = [cardToDiscard, ...updatedDiscardPile];
+            lastAction = `${winnerStack.playerName} won the stack race!`;
+          }
+        } else {
+          // No valid stacks - all were misstacks
+          lastAction = sortedStacks.length > 1 
+            ? 'All stack attempts failed - MISSTACK!' 
+            : `${sortedStacks[0]?.playerName || 'Player'} MISSTACKED!`;
+        }
+        
         set({
           game: {
             ...game,
-            stackAnimation: {
-              stacks: [stackAction],
-              winnerId: null,
-              resolvedAt: null,
-              phase: 'flying_to_discard',
-              result: undefined,
+            stackRaceAnimation: {
+              ...race,
+              phase: 'resolving',
+              winnerId,
+              winnerCard,
+              winnerStack, // Store the winner stack for card give
+              results,
+              stacks: sortedStacks,
+              awaitingCardGive, // Track if we need to wait for card selection
             },
-            lastAction: `${currentPlayer.name} is attempting to stack...`,
+            players: updatedPlayers,
+            discardPile: updatedDiscardPile,
+            lastDiscardWasStack: winnerId !== null && !awaitingCardGive, // Only set if completed
+            lastAction,
             stateVersion: (game.stateVersion || 0) + 1,
           },
-          selectedCardIndex: null,
+        });
+        
+        // Handle misstacks - give penalty cards
+        for (const stack of sortedStacks) {
+          if (results[stack.playerId] && !results[stack.playerId].success) {
+            // This player misstacked - they get a penalty card
+            // We'll handle this after the animation completes
+          }
+        }
+      },
+      
+      setStackRaceDiscardPosition: (discardPos) => {
+        const { game } = get();
+        if (!game || !game.stackRaceAnimation) return;
+        
+        set({
+          game: {
+            ...game,
+            stackRaceAnimation: {
+              ...game.stackRaceAnimation,
+              discardPosition: discardPos,
+            },
+            stateVersion: (game.stateVersion || 0) + 1,
+          },
+        });
+      },
+      
+      updateStackRaceAnimationPhase: (playerId, phase) => {
+        const { game } = get();
+        if (!game || !game.stackRaceAnimation) return;
+        
+        const results = { ...game.stackRaceAnimation.results };
+        if (results[playerId]) {
+          results[playerId] = { ...results[playerId], animationPhase: phase };
+        }
+        
+        set({
+          game: {
+            ...game,
+            stackRaceAnimation: {
+              ...game.stackRaceAnimation,
+              results,
+            },
+            stateVersion: (game.stateVersion || 0) + 1,
+          },
+        });
+      },
+      
+      clearStackRace: () => {
+        const { game, peerId } = get();
+        if (!game || !game.stackRaceAnimation) return;
+        
+        const race = game.stackRaceAnimation;
+        let updatedDeck = [...game.deck];
+        let updatedPlayers = [...game.players];
+        let penaltyDisplay: GameState['penaltyCardDisplay'] = null;
+        
+        // Only give penalty cards to players who stacked the WRONG card (misstack)
+        // Players who stacked the right card but were too slow do NOT get a penalty
+        for (const stack of race.stacks) {
+          const result = race.results[stack.playerId];
+          // Only penalize if success is FALSE (wrong card), not if they just lost the race
+          if (result && result.success === false) {
+            // Misstack (wrong card) - draw penalty card FACE DOWN (player doesn't see it)
+            const playerIdx = updatedPlayers.findIndex(p => p.id === stack.playerId);
+            if (playerIdx >= 0 && updatedDeck.length > 0) {
+              const [penaltyCard, ...remainingDeck] = updatedDeck;
+              updatedDeck = remainingDeck;
+              
+              const player = { ...updatedPlayers[playerIdx] };
+              // Card goes face-down - player doesn't get to see what they drew
+              player.cards = [...player.cards, { ...penaltyCard, faceUp: false }];
+              updatedPlayers[playerIdx] = player;
+              
+              // Set penalty display for face-down card animation (shown for last misstacker)
+              penaltyDisplay = {
+                card: penaltyCard, // Stored but displayed face-down
+                playerId: stack.playerId,
+                playerName: stack.playerName,
+                shownAt: Date.now(),
+              };
+            }
+          }
+          // Note: Players with result.success === true but result.isWinner === false
+          // were just too slow - they don't get a penalty, their card just returns
+        }
+        
+        set({
+          game: {
+            ...game,
+            stackRaceAnimation: null,
+            deck: updatedDeck,
+            players: updatedPlayers,
+            // Show face-down card animation for penalty
+            penaltyCardDisplay: penaltyDisplay,
+            stateVersion: (game.stateVersion || 0) + 1,
+          },
         });
       },
 
@@ -956,7 +1227,72 @@ export const useGameStore = create<GameStore>()(
       // Complete stack when player selects which card to give
       completeStackGive: (cardIndexToGive: number) => {
         const { game, peerId } = get();
-        if (!game || !game.stackAnimation?.result) return;
+        if (!game) return;
+        
+        // Handle stack race case first
+        if (game.stackRaceAnimation?.awaitingCardGive && game.stackRaceAnimation.winnerStack) {
+          const winnerStack = game.stackRaceAnimation.winnerStack;
+          const { targetPlayerId, targetCardIndex, playerId: stackerId, playerName: stackerName } = winnerStack;
+          
+          if (!targetPlayerId || targetCardIndex === undefined) return;
+          
+          const updatedPlayers = [...game.players];
+          const stackerIdx = updatedPlayers.findIndex(p => p.id === stackerId);
+          const targetIdx = updatedPlayers.findIndex(p => p.id === targetPlayerId);
+          
+          if (stackerIdx === -1 || targetIdx === -1) return;
+          
+          // Get the card being stacked (from target player)
+          const stackedCard = updatedPlayers[targetIdx].cards[targetCardIndex];
+          
+          // Get the card to give (from stacker)
+          const cardToGive = updatedPlayers[stackerIdx].cards[cardIndexToGive];
+          
+          // Remove stacked card from target
+          updatedPlayers[targetIdx].cards.splice(targetCardIndex, 1);
+          
+          // Remove card to give from stacker
+          updatedPlayers[stackerIdx].cards.splice(cardIndexToGive, 1);
+          
+          // Give card to target INTO the emptied slot (so the position is obvious)
+          updatedPlayers[targetIdx].cards.splice(targetCardIndex, 0, { ...cardToGive, faceUp: false });
+          
+          // Add stacked card to discard
+          const newDiscardPile = [{ ...stackedCard, faceUp: true }, ...game.discardPile];
+          
+          const targetPlayer = game.players.find(p => p.id === targetPlayerId);
+          
+          set({
+            game: {
+              ...game,
+              players: updatedPlayers,
+              discardPile: newDiscardPile,
+              cardMoveAnimation: {
+                type: 'give',
+                playerId: stackerId,
+                playerName: stackerName,
+                // Move the given card (always face-down)
+                drawnCard: { ...cardToGive, faceUp: false },
+                discardedCard: null,
+                handIndex: cardIndexToGive,
+                targetPlayerId,
+                targetHandIndex: targetCardIndex,
+                startedAt: Date.now(),
+              },
+              stackRaceAnimation: {
+                ...game.stackRaceAnimation,
+                awaitingCardGive: false,
+              },
+              lastDiscardWasStack: true,
+              lastAction: `${stackerName} gave a card to ${targetPlayer?.name}!`,
+              stateVersion: (game.stateVersion || 0) + 1,
+            },
+          });
+          return;
+        }
+        
+        // Handle legacy single-stack case
+        if (!game.stackAnimation?.result) return;
         
         const { success, targetPlayerId, targetCardIndex, stackerId, stackerName } = game.stackAnimation.result;
         if (!success || !targetPlayerId || targetCardIndex === undefined) return;
@@ -1022,17 +1358,18 @@ export const useGameStore = create<GameStore>()(
         const { game, peerId } = get();
         if (!game) return;
         
-        // If misstack, apply penalty (do NOT reveal the penalty card via popup/text)
+        // If misstack, apply penalty and show face-down card animation
         if (game.stackAnimation?.result && !game.stackAnimation.result.success) {
           if (game.deck.length > 0) {
             const { card: penaltyCard, remainingDeck } = drawFromDeck(game.deck);
             if (penaltyCard) {
               const updatedPlayers = [...game.players];
-              const playerIdx = updatedPlayers.findIndex(p => p.id === game.stackAnimation!.result!.stackerId);
+              const stackerId = game.stackAnimation!.result!.stackerId;
+              const playerIdx = updatedPlayers.findIndex(p => p.id === stackerId);
               const stackerName = game.stackAnimation.result.stackerName;
               
               if (playerIdx !== -1) {
-                // Add the penalty card (keep it face down, don't reveal any cards)
+                // Add the penalty card (keep it face down - player doesn't see it)
                 updatedPlayers[playerIdx].cards.push({ ...penaltyCard, faceUp: false });
               }
               
@@ -1042,7 +1379,14 @@ export const useGameStore = create<GameStore>()(
                   players: updatedPlayers,
                   deck: remainingDeck,
                   stackAnimation: null,
-                  penaltyCardDisplay: null,
+                  // Set penaltyCardDisplay to trigger face-down card animation
+                  // The card is stored but displayed face-down in the animation
+                  penaltyCardDisplay: {
+                    card: penaltyCard, // Stored but shown face-down
+                    playerId: stackerId,
+                    playerName: stackerName,
+                    shownAt: Date.now(),
+                  },
                   lastAction: `${stackerName} drew a penalty card!`,
                   stateVersion: (game.stateVersion || 0) + 1,
                 },
