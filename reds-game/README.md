@@ -80,21 +80,33 @@ This app is designed to be deployed on Vercel:
 2. Import in Vercel
 3. Deploy!
 
-### Multiplayer + cross-network reliability (TURN)
+### PeerJS Signaling Server (Recommended)
+
+⚠️ **The default public PeerJS server (`0.peerjs.com`) is often unreliable.** For production use, deploy your own PeerJS signaling server:
+
+1. Deploy the `peerjs-server/` folder to Railway, Render, or Fly.io (all have free tiers)
+2. Set these environment variables in Vercel:
+
+```
+NEXT_PUBLIC_PEERJS_HOST=your-server.railway.app
+NEXT_PUBLIC_PEERJS_PORT=443
+NEXT_PUBLIC_PEERJS_SECURE=true
+NEXT_PUBLIC_PEERJS_PATH=/
+```
+
+See `peerjs-server/README.md` for detailed deployment instructions.
+
+### TURN Server (for cross-network reliability)
+
 The game uses **PeerJS** (WebRTC data channels). For players on **different networks**, some NATs/firewalls require a **TURN server** to reliably connect.
 
 Set these in Vercel (Project → Settings → Environment Variables):
 
-- `NEXT_PUBLIC_TURN_URLS`: comma-separated TURN URLs (example: `turn:your-turn-host:3478?transport=udp,turn:your-turn-host:3478?transport=tcp`)
-- `NEXT_PUBLIC_TURN_USERNAME`: TURN username
-- `NEXT_PUBLIC_TURN_CREDENTIAL`: TURN credential/password
+- `TURN_URLS`: comma-separated TURN URLs (example: `turn:relay.metered.ca:80,turn:relay.metered.ca:443`)
+- `TURN_USERNAME`: TURN username
+- `TURN_CREDENTIAL`: TURN credential/password
 
-Optional (custom PeerJS signaling server):
-
-- `NEXT_PUBLIC_PEERJS_HOST`
-- `NEXT_PUBLIC_PEERJS_PORT`
-- `NEXT_PUBLIC_PEERJS_SECURE` (`true`/`false`)
-- `NEXT_PUBLIC_PEERJS_PATH`
+Free TURN servers are available from [Metered.ca](https://www.metered.ca/tools/openrelay/) or [Xirsys](https://xirsys.com/).
 
 ## 🛠 Tech Stack
 

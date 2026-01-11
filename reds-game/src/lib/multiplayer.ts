@@ -448,6 +448,15 @@ class MultiplayerConnection {
     const secure = parseBooleanEnv(process.env.NEXT_PUBLIC_PEERJS_SECURE) ?? true;
     const path = process.env.NEXT_PUBLIC_PEERJS_PATH || '/';
 
+    const isPublicServer = host === '0.peerjs.com';
+    if (isPublicServer) {
+      console.warn('⚠️ Using public PeerJS server (0.peerjs.com) - this may be unreliable!');
+      console.warn('   Consider deploying your own PeerJS server for better reliability.');
+      console.warn('   See peerjs-server/README.md for deployment instructions.');
+    }
+
+    console.log(`🔌 Connecting to PeerJS server: ${secure ? 'wss' : 'ws'}://${host}:${port}${path}`);
+
     this.peer = new Peer(this.playerId, {
       host,
       port,
@@ -502,7 +511,8 @@ class MultiplayerConnection {
     });
 
     await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('PeerJS initialization timeout')), 15000);
+      // Longer timeout (30s) to allow for TURN/ICE negotiation with many servers
+      const t = setTimeout(() => reject(new Error('PeerJS initialization timeout')), 30000);
       this.peer!.once('open', () => {
         clearTimeout(t);
         console.log('✨ PeerJS initialized with ID:', this.playerId, 'via', `${secure ? 'wss' : 'ws'}://${host}:${port}${path}`);

@@ -675,6 +675,16 @@ export function GameTable() {
               phase: 'confirmed',
             }));
             
+            // Sync BOTH selections to all players so spectators see both highlights
+            setSwapSelection(
+              powerUpSwapAnim.opponentId!, 
+              powerUpSwapAnim.opponentCardIndex!, 
+              null, 
+              type,
+              playerId,
+              cardIndex
+            );
+            
             // Execute the swap between the two opponents
             executeOthersSwap(
               powerUpSwapAnim.opponentId!, 
@@ -1692,9 +1702,9 @@ export function GameTable() {
             whileTap={isMyTurn && game.turnPhase === 'draw' && !game.redsCallerId ? { scale: 0.95 } : {}}
             onClick={handleCallReds}
             disabled={!isMyTurn || game.turnPhase !== 'draw' || !!game.redsCallerId}
-            className={`px-8 py-4 font-bold text-lg rounded-xl shadow-lg transition-all ${
+            className={`px-4 py-2 font-semibold text-sm rounded-lg shadow-md transition-all ${
               isMyTurn && game.turnPhase === 'draw' && !game.redsCallerId
-                ? 'bg-gradient-to-r from-red-500 to-rose-600 text-white hover:shadow-xl cursor-pointer'
+                ? 'bg-gradient-to-r from-red-500 to-rose-600 text-white hover:shadow-lg cursor-pointer'
                 : game.redsCallerId
                   ? 'bg-gray-700/50 text-gray-500 cursor-not-allowed line-through'
                   : 'bg-gray-600/50 text-gray-400 cursor-not-allowed'

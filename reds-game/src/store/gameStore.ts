@@ -66,7 +66,7 @@ interface GameStore {
   
   // Swap animation (for showing blind swaps to all players)
   startSwapAnimation: (swapType: PowerUpType, targetPlayerId: string, targetCardIndex: number, sourceCardIndex?: number, secondTargetPlayerId?: string, secondTargetCardIndex?: number) => void;
-  setSwapSelection: (targetPlayerId: string | null, targetCardIndex: number | null, sourceCardIndex: number | null, swapType: PowerUpType | null) => void;
+  setSwapSelection: (targetPlayerId: string | null, targetCardIndex: number | null, sourceCardIndex: number | null, swapType: PowerUpType | null, secondTargetPlayerId?: string | null, secondTargetCardIndex?: number | null) => void;
   clearSwapAnimation: () => void;
   clearPenaltyCardDisplay: () => void;
   setCardMoveAnimation: (animation: GameState['cardMoveAnimation']) => void;
@@ -1051,7 +1051,7 @@ export const useGameStore = create<GameStore>()(
         });
       },
       
-      setSwapSelection: (targetPlayerId, targetCardIndex, sourceCardIndex, swapType) => {
+      setSwapSelection: (targetPlayerId, targetCardIndex, sourceCardIndex, swapType, secondTargetPlayerId, secondTargetCardIndex) => {
         const { game, peerId } = get();
         if (!game) return;
         
@@ -1069,9 +1069,17 @@ export const useGameStore = create<GameStore>()(
         
         const currentPlayer = game.players[game.currentPlayerIndex];
         
-        // For _others swaps, preserve existing first target if we're adding second
+        // For _others swaps, use passed second target OR preserve existing
         const existingSwap = game.swapAnimation;
         const isOthersSwap = swapType === 'blind_swap_others' || swapType === 'inspect_swap_others';
+        
+        // Determine second target: use passed params if provided, otherwise preserve existing
+        const resolvedSecondTargetPlayerId = isOthersSwap 
+          ? (secondTargetPlayerId ?? existingSwap?.secondTargetPlayerId ?? undefined)
+          : undefined;
+        const resolvedSecondTargetCardIndex = isOthersSwap 
+          ? (secondTargetCardIndex ?? existingSwap?.secondTargetCardIndex ?? undefined)
+          : undefined;
         
         // Allow partial selections (only source OR only target selected)
         // This broadcasts the selection state so other players can see highlighting
@@ -1083,11 +1091,8 @@ export const useGameStore = create<GameStore>()(
           sourceCardIndex: sourceCardIndex ?? undefined,
           targetPlayerId: targetPlayerId ?? undefined,
           targetCardIndex: targetCardIndex ?? undefined,
-          // For _others swaps, preserve second target if it existed
-          secondTargetPlayerId: isOthersSwap && existingSwap?.secondTargetPlayerId 
-            ? existingSwap.secondTargetPlayerId : undefined,
-          secondTargetCardIndex: isOthersSwap && existingSwap?.secondTargetCardIndex !== undefined 
-            ? existingSwap.secondTargetCardIndex : undefined,
+          secondTargetPlayerId: resolvedSecondTargetPlayerId,
+          secondTargetCardIndex: resolvedSecondTargetCardIndex,
           phase: 'selecting',
           startedAt: Date.now(),
         };

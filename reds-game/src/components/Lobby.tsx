@@ -685,9 +685,21 @@ export function Lobby({ onGameStart }: LobbyProps) {
           transition={{ delay: 0.5 }}
           className="mt-6 text-center text-emerald-500 text-xs"
         >
-          <p>Goal: Have the lowest sum then call &quot;Reds!&quot;</p>
+          <p className="font-semibold">Goal: Have the lowest sum then call &quot;Reds!&quot;</p>
           <p className="mt-1">Card values: Joker=0, Ace=1, 2-10, Jack=11, Queen=12, Black King=13, Red King=-2</p>
-          <p className="mt-3 text-emerald-600/60"><span className="text-emerald-400">v</span><span className="text-emerald-500">1</span><span className="text-emerald-400">.</span><span className="text-emerald-500">0</span><span className="text-emerald-400">.</span><span className="text-emerald-500">0</span>-beta</p>
+          
+          <ul className="mt-3 text-left text-emerald-400/80 space-y-1 max-w-md mx-auto">
+            <li>• Start with 4 cards face-down, peek at your bottom 2</li>
+            <li>• Draw from deck or discard pile, then swap or discard</li>
+            <li>• <span className="text-amber-400">7:</span> Peek at one of your own cards</li>
+            <li>• <span className="text-amber-400">8:</span> Peek at one opponent&apos;s card</li>
+            <li>• <span className="text-amber-400">9:</span> Blind swap with an opponent</li>
+            <li>• <span className="text-amber-400">10:</span> Look at opponent&apos;s card, then swap or keep</li>
+            <li>• <span className="text-blue-400">Stack:</span> Triple-tap any card you know to be the same as the top card of the discard pile</li>
+            <li>• Call <span className="text-red-400">&quot;Reds!&quot;</span> when ready — everyone else gets one final turn</li>
+          </ul>
+          
+          <p className="mt-4 text-emerald-600/60"><span className="text-emerald-400">v</span><span className="text-emerald-500">1</span><span className="text-emerald-400">.</span><span className="text-emerald-500">0</span><span className="text-emerald-400">.</span><span className="text-emerald-500">4</span>-beta</p>
         </motion.div>
       </motion.div>
     </div>
