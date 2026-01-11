@@ -80,7 +80,21 @@ This app is designed to be deployed on Vercel:
 2. Import in Vercel
 3. Deploy!
 
-The game uses simple-peer for robust peer-to-peer WebRTC connections, with BroadcastChannel signaling for instant local development and testing.
+### Multiplayer + cross-network reliability (TURN)
+The game uses **PeerJS** (WebRTC data channels). For players on **different networks**, some NATs/firewalls require a **TURN server** to reliably connect.
+
+Set these in Vercel (Project → Settings → Environment Variables):
+
+- `NEXT_PUBLIC_TURN_URLS`: comma-separated TURN URLs (example: `turn:your-turn-host:3478?transport=udp,turn:your-turn-host:3478?transport=tcp`)
+- `NEXT_PUBLIC_TURN_USERNAME`: TURN username
+- `NEXT_PUBLIC_TURN_CREDENTIAL`: TURN credential/password
+
+Optional (custom PeerJS signaling server):
+
+- `NEXT_PUBLIC_PEERJS_HOST`
+- `NEXT_PUBLIC_PEERJS_PORT`
+- `NEXT_PUBLIC_PEERJS_SECURE` (`true`/`false`)
+- `NEXT_PUBLIC_PEERJS_PATH`
 
 ## 🛠 Tech Stack
 
@@ -88,7 +102,7 @@ The game uses simple-peer for robust peer-to-peer WebRTC connections, with Broad
 - **TypeScript** - Type safety
 - **Tailwind CSS** - Styling
 - **Framer Motion** - Animations
-- **simple-peer** - Low-level WebRTC data channels
+- **PeerJS** - WebRTC data channels + signaling
 - **Zustand** - State management
 
 ## 📱 Features

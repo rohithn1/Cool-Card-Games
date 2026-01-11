@@ -1,6 +1,6 @@
 // Card suits and values
-export type Suit = 'hearts' | 'diamonds' | 'clubs' | 'spades';
-export type Rank = 'A' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'J' | 'Q' | 'K';
+export type Suit = 'hearts' | 'diamonds' | 'clubs' | 'spades' | 'joker';
+export type Rank = 'A' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'J' | 'Q' | 'K' | 'JOKER';
 
 export interface Card {
   id: string;
@@ -14,6 +14,7 @@ export interface Player {
   name: string;
   cards: Card[];
   isHost: boolean;
+  isReady: boolean;
   isConnected: boolean;
   hasSeenBottomCards: boolean;
   hasCalledReds: boolean;
@@ -29,10 +30,17 @@ export type GamePhase =
 export type TurnPhase =
   | 'draw'              // Player needs to draw a card
   | 'decide'            // Player has drawn and needs to decide what to do
+  | 'power_up_choice'   // Player discarded a power-up card and must choose to use or skip
   | 'power_up'          // Player is using a power-up ability
   | 'stacking';         // A stacking action is in progress
 
-export type PowerUpType = 'inspect_own' | 'inspect_other' | 'blind_swap' | 'inspect_swap';
+export type PowerUpType = 
+  | 'inspect_own' 
+  | 'inspect_other' 
+  | 'blind_swap' 
+  | 'inspect_swap'
+  | 'blind_swap_others'    // When player has 0 cards - swap 2 other players' cards blindly
+  | 'inspect_swap_others'; // When player has 0 cards - inspect and swap 2 other players' cards
 
 export interface PowerUpAction {
   type: PowerUpType;
@@ -40,14 +48,51 @@ export interface PowerUpAction {
   sourceCardIndex?: number;
   targetPlayerId?: string;
   targetCardIndex?: number;
+  // For swapping between two opponents (when player has 0 cards)
+  secondTargetPlayerId?: string;
+  secondTargetCardIndex?: number;
 }
 
 export interface StackAction {
   playerId: string;
+  playerName: string;
   playerCardIndex: number;
+  card: Card;
   targetPlayerId?: string;     // If stacking another player's card
   targetCardIndex?: number;
   timestamp: number;
+}
+
+export interface StackAnimation {
+  stacks: StackAction[];
+  winnerId: string | null;
+  resolvedAt: number | null;
+  // Track the stack result for animation
+  result?: {
+    success: boolean;
+    stackedCard: Card;
+    stackerId: string;
+    stackerName: string;
+    targetPlayerId?: string; // If stacked opponent's card
+    targetCardIndex?: number;
+    awaitingCardGive?: boolean; // If stacker needs to select a card to give
+  };
+}
+
+export interface SwapAnimation {
+  type: 'blind_swap' | 'blind_swap_others' | 'inspect_swap' | 'inspect_swap_others';
+  playerId: string;  // Player performing the swap
+  playerName: string;
+  // For regular swaps (player's card <-> opponent's card)
+  sourcePlayerId?: string;
+  sourceCardIndex?: number;
+  targetPlayerId: string;
+  targetCardIndex: number;
+  // For _others swaps (opponent 1 <-> opponent 2)
+  secondTargetPlayerId?: string;
+  secondTargetCardIndex?: number;
+  phase: 'selecting' | 'animating' | 'completed';
+  startedAt: number;
 }
 
 export interface GameState {
@@ -61,10 +106,39 @@ export interface GameState {
   drawnCard: Card | null;
   currentPowerUp: PowerUpAction | null;
   pendingStacks: StackAction[];
+  stackAnimation: StackAnimation | null;
+  swapAnimation: SwapAnimation | null; // For showing swap animations to all players
+  lastDiscardWasStack: boolean; // Prevents multiple stacks on same card
   redsCallerId: string | null;
   finalRoundTurnsRemaining: number;
   winner: string | null;
   lastAction: string;
+  stateVersion: number; // Increments on every state change for reliable sync detection
+  // Track which card is being inspected (visible to all players)
+  inspectingCard: {
+    playerId: string;
+    cardIndex: number;
+  } | null;
+  // Penalty card display - visible to all players when someone misstacks
+  penaltyCardDisplay: {
+    card: Card;
+    playerId: string;
+    playerName: string;
+    shownAt: number;
+  } | null;
+  // Card movement animation - visible to all players for draw/discard/swap
+  cardMoveAnimation: {
+    type: 'draw_deck' | 'draw_discard' | 'discard' | 'swap' | 'give';
+    playerId: string;
+    playerName: string;
+    drawnCard: Card | null; // Face-down for other players
+    discardedCard: Card | null; // Card going to discard pile
+    handIndex: number | null;
+    // For give animations
+    targetPlayerId?: string;
+    targetHandIndex?: number | null;
+    startedAt: number;
+  } | null;
 }
 
 export interface GameMessage {
@@ -73,6 +147,7 @@ export interface GameMessage {
     | 'join_response'
     | 'player_joined'
     | 'player_left'
+    | 'player_ready'
     | 'game_start'
     | 'state_sync'
     | 'draw_card'
@@ -94,6 +169,11 @@ export interface GameMessage {
 // Card value calculation
 export function getCardValue(card: Card): number {
   const { rank, suit } = card;
+  
+  // Joker = 0
+  if (rank === 'JOKER') {
+    return 0;
+  }
   
   // Red King = -2
   if (rank === 'K' && (suit === 'hearts' || suit === 'diamonds')) {

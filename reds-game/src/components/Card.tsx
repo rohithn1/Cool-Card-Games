@@ -1,18 +1,77 @@
 'use client';
 
 import { Card as CardType } from '@/types/game';
-import { getCardDisplay } from '@/lib/deck';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
+import Image from 'next/image';
 
 interface CardProps {
   card: CardType;
   onClick?: () => void;
   selected?: boolean;
   highlighted?: boolean;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'xl';
   className?: string;
   disabled?: boolean;
   showPeek?: boolean;
+}
+
+// Size configurations - all dimensions scale proportionally
+const sizeConfig = {
+  sm: {
+    width: 'w-12',
+    height: 'h-16',
+    cornerRank: 'text-[10px]',
+    cornerSymbol: 'text-[8px]',
+    centerSymbol: 'text-2xl',
+    jokerLetter: 'text-[5px]',
+    jokerCenter: 'text-xl',
+    cornerOffset: 'top-0.5 left-1',
+    border: 'border',
+  },
+  md: {
+    width: 'w-16',
+    height: 'h-22',
+    cornerRank: 'text-xs',
+    cornerSymbol: 'text-[10px]',
+    centerSymbol: 'text-3xl',
+    jokerLetter: 'text-[6px]',
+    jokerCenter: 'text-2xl',
+    cornerOffset: 'top-0.5 left-1',
+    border: 'border-2',
+  },
+  lg: {
+    width: 'w-20',
+    height: 'h-28',
+    cornerRank: 'text-sm',
+    cornerSymbol: 'text-xs',
+    centerSymbol: 'text-5xl',
+    jokerLetter: 'text-[8px]',
+    jokerCenter: 'text-3xl',
+    cornerOffset: 'top-1 left-1.5',
+    border: 'border-2',
+  },
+  xl: {
+    width: 'w-24',
+    height: 'h-32',
+    cornerRank: 'text-base',
+    cornerSymbol: 'text-sm',
+    centerSymbol: 'text-6xl',
+    jokerLetter: 'text-[10px]',
+    jokerCenter: 'text-4xl',
+    cornerOffset: 'top-1 left-2',
+    border: 'border-2',
+  },
+};
+
+// Get suit symbol
+function getSuitSymbol(suit: string): string {
+  const symbols: Record<string, string> = {
+    hearts: '♥',
+    diamonds: '♦',
+    clubs: '♣',
+    spades: '♠',
+  };
+  return symbols[suit] || '?';
 }
 
 export function Card({
@@ -25,65 +84,99 @@ export function Card({
   disabled = false,
   showPeek = false,
 }: CardProps) {
-  const { symbol, color } = getCardDisplay(card);
-  
-  const sizeClasses = {
-    sm: 'w-12 h-16 text-sm',
-    md: 'w-16 h-22 text-base',
-    lg: 'w-20 h-28 text-lg',
-  };
-
+  const config = sizeConfig[size];
   const isRed = card.suit === 'hearts' || card.suit === 'diamonds';
+  const isJoker = card.rank === 'JOKER';
+  const symbol = getSuitSymbol(card.suit);
+  const color = isRed ? 'text-red-600' : 'text-gray-900';
 
+  // Card back
   if (!card.faceUp && !showPeek) {
-    // Card back
     return (
       <motion.div
         whileHover={onClick && !disabled ? { scale: 1.05, y: -4 } : {}}
         whileTap={onClick && !disabled ? { scale: 0.98 } : {}}
         onClick={!disabled ? onClick : undefined}
         className={`
-          ${sizeClasses[size]}
-          rounded-xl
-          bg-gradient-to-br from-rose-700 via-red-800 to-rose-900
-          border-2 border-rose-600
-          shadow-lg
-          flex items-center justify-center
+          ${config.width} ${config.height}
+          rounded-xl shadow-lg overflow-hidden relative
           ${onClick && !disabled ? 'cursor-pointer hover:shadow-xl' : ''}
           ${selected ? 'ring-4 ring-yellow-400 ring-offset-2 ring-offset-emerald-900' : ''}
           ${highlighted ? 'ring-4 ring-cyan-400 ring-offset-2 ring-offset-emerald-900 animate-pulse' : ''}
           ${disabled ? 'opacity-50 cursor-not-allowed' : ''}
           ${className}
-          overflow-hidden
-          relative
         `}
       >
-        {/* Pattern overlay */}
-        <div className="absolute inset-0 opacity-30">
-          <div className="absolute inset-2 border-2 border-rose-400 rounded-lg" />
-          <div className="absolute inset-4 border border-rose-500 rounded" />
-        </div>
-        
-        {/* Center diamond pattern */}
-        <div className="text-rose-400 text-2xl font-bold opacity-50">♦</div>
+        <Image
+          src="/card-back.png"
+          alt="Card back"
+          fill
+          className="object-cover rounded-xl"
+          sizes="(max-width: 768px) 80px, 96px"
+          priority
+        />
       </motion.div>
     );
   }
 
-  // Card front
+  // Joker card
+  if (isJoker) {
+    return (
+      <motion.div
+        whileHover={onClick && !disabled ? { scale: 1.05, y: -4 } : {}}
+        whileTap={onClick && !disabled ? { scale: 0.98 } : {}}
+        onClick={!disabled ? onClick : undefined}
+        className={`
+          ${config.width} ${config.height}
+          rounded-xl shadow-lg overflow-hidden relative
+          bg-gradient-to-br from-purple-100 via-white to-violet-100
+          ${config.border} border-purple-400
+          ${onClick && !disabled ? 'cursor-pointer hover:shadow-xl' : ''}
+          ${selected ? 'ring-4 ring-yellow-400 ring-offset-2 ring-offset-emerald-900' : ''}
+          ${highlighted ? 'ring-4 ring-cyan-400 ring-offset-2 ring-offset-emerald-900 animate-pulse' : ''}
+          ${disabled ? 'opacity-50 cursor-not-allowed' : ''}
+          ${className}
+        `}
+      >
+        {/* Background pattern */}
+        <div className="absolute inset-0 opacity-10" style={{
+          backgroundImage: 'repeating-linear-gradient(45deg, #7c3aed 0, #7c3aed 1px, transparent 0, transparent 50%)',
+          backgroundSize: '6px 6px',
+        }} />
+
+        {/* Top left JOKER vertical */}
+        <div className="absolute top-1 left-1 flex flex-col items-center leading-none">
+          {'JOKER'.split('').map((letter, i) => (
+            <span key={i} className={`text-purple-700 font-black ${config.jokerLetter}`}>{letter}</span>
+          ))}
+        </div>
+
+        {/* Center */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className={`${config.jokerCenter}`}>🃏</span>
+        </div>
+
+        {/* Bottom right JOKER vertical (rotated) */}
+        <div className="absolute bottom-1 right-1 flex flex-col items-center leading-none rotate-180">
+          {'JOKER'.split('').map((letter, i) => (
+            <span key={i} className={`text-purple-700 font-black ${config.jokerLetter}`}>{letter}</span>
+          ))}
+        </div>
+      </motion.div>
+    );
+  }
+
+  // Standard card (A, 2-10, J, Q, K) - simplified layout
   return (
     <motion.div
       whileHover={onClick && !disabled ? { scale: 1.05, y: -4 } : {}}
       whileTap={onClick && !disabled ? { scale: 0.98 } : {}}
       onClick={!disabled ? onClick : undefined}
       className={`
-        ${sizeClasses[size]}
-        rounded-xl
-        bg-gradient-to-br from-white to-gray-100
-        border-2 border-gray-300
-        shadow-lg
-        flex flex-col items-center justify-between
-        p-1.5
+        ${config.width} ${config.height}
+        rounded-xl shadow-lg overflow-hidden relative
+        bg-gradient-to-br from-white via-gray-50 to-white
+        ${config.border} ${isRed ? 'border-red-200' : 'border-gray-300'}
         ${onClick && !disabled ? 'cursor-pointer hover:shadow-xl' : ''}
         ${selected ? 'ring-4 ring-yellow-400 ring-offset-2 ring-offset-emerald-900' : ''}
         ${highlighted ? 'ring-4 ring-cyan-400 ring-offset-2 ring-offset-emerald-900 animate-pulse' : ''}
@@ -91,27 +184,27 @@ export function Card({
         ${className}
       `}
     >
-      {/* Top left corner */}
-      <div className={`self-start ${isRed ? 'text-red-600' : 'text-gray-900'} leading-none`}>
-        <div className="text-sm font-bold">{card.rank}</div>
-        <div className="text-xs">{symbol}</div>
+      {/* Top left corner - rank + suit */}
+      <div className={`absolute ${config.cornerOffset} ${color} leading-none text-center`}>
+        <div className={`${config.cornerRank} font-bold`}>{card.rank}</div>
+        <div className={config.cornerSymbol}>{symbol}</div>
       </div>
-      
-      {/* Center */}
-      <div className={`text-2xl ${isRed ? 'text-red-600' : 'text-gray-900'}`}>
-        {symbol}
+
+      {/* Large center suit symbol */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className={`${config.centerSymbol} ${color}`}>{symbol}</span>
       </div>
-      
-      {/* Bottom right corner (rotated) */}
-      <div className={`self-end rotate-180 ${isRed ? 'text-red-600' : 'text-gray-900'} leading-none`}>
-        <div className="text-sm font-bold">{card.rank}</div>
-        <div className="text-xs">{symbol}</div>
+
+      {/* Bottom right corner - rank + suit (rotated 180°) */}
+      <div className={`absolute bottom-1 right-1.5 rotate-180 ${color} leading-none text-center`}>
+        <div className={`${config.cornerRank} font-bold`}>{card.rank}</div>
+        <div className={config.cornerSymbol}>{symbol}</div>
       </div>
     </motion.div>
   );
 }
 
-// Deck component (face down pile)
+// Deck component (face down pile) with animation
 export function Deck({
   count,
   onClick,
@@ -126,54 +219,49 @@ export function Deck({
   return (
     <motion.div
       whileHover={onClick && !disabled ? { scale: 1.03 } : {}}
-      whileTap={onClick && !disabled ? { scale: 0.98 } : {}}
+      whileTap={onClick && !disabled ? { scale: 0.95 } : {}}
       onClick={!disabled ? onClick : undefined}
-      className={`
-        relative w-20 h-28 
-        ${onClick && !disabled ? 'cursor-pointer' : ''}
-        ${highlighted ? 'animate-pulse' : ''}
-      `}
+      className={`relative w-20 h-28 ${onClick && !disabled ? 'cursor-pointer' : ''}`}
     >
-      {/* Stacked cards effect */}
-      {[...Array(Math.min(5, count))].map((_, i) => (
-        <div
-          key={i}
-          className={`
-            absolute w-full h-full
-            rounded-xl
-            bg-gradient-to-br from-rose-700 via-red-800 to-rose-900
-            border-2 border-rose-600
-            shadow-lg
-            ${highlighted ? 'ring-4 ring-yellow-400' : ''}
-          `}
-          style={{
-            top: -i * 2,
-            left: -i * 1,
-            zIndex: 5 - i,
-          }}
-        >
-          {i === 0 && (
-            <>
-              <div className="absolute inset-0 opacity-30">
-                <div className="absolute inset-2 border-2 border-rose-400 rounded-lg" />
-              </div>
-              <div className="absolute inset-0 flex items-center justify-center text-rose-400 text-2xl font-bold opacity-50">
-                ♦
-              </div>
-            </>
-          )}
-        </div>
-      ))}
+      <AnimatePresence>
+        {[...Array(Math.min(5, count))].map((_, i) => (
+          <motion.div
+            key={`deck-card-${count}-${i}`}
+            initial={i === 0 ? { y: -20, opacity: 0 } : {}}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: -50, opacity: 0, rotateZ: 5 }}
+            transition={{ duration: 0.2 }}
+            className={`
+              absolute w-full h-full rounded-xl shadow-lg overflow-hidden
+              ${highlighted && i === 0 ? 'ring-4 ring-yellow-400 shadow-yellow-400/30' : ''}
+            `}
+            style={{ top: -i * 1.5, left: -i * 0.5, zIndex: 5 - i }}
+          >
+            <Image
+              src="/card-back.png"
+              alt="Card back"
+              fill
+              className="object-cover rounded-xl"
+              sizes="80px"
+              priority={i === 0}
+            />
+          </motion.div>
+        ))}
+      </AnimatePresence>
       
-      {/* Card count badge */}
-      <div className="absolute -bottom-2 -right-2 bg-amber-500 text-amber-950 rounded-full w-7 h-7 flex items-center justify-center text-xs font-bold shadow-md z-10">
+      <motion.div 
+        key={count}
+        initial={{ scale: 1.2 }}
+        animate={{ scale: 1 }}
+        className="absolute -bottom-2 -right-2 bg-amber-500 text-amber-950 rounded-full w-7 h-7 flex items-center justify-center text-xs font-bold shadow-md z-10"
+      >
         {count}
-      </div>
+      </motion.div>
     </motion.div>
   );
 }
 
-// Discard pile component
+// Discard pile component with animation
 export function DiscardPile({
   cards,
   onClick,
@@ -191,11 +279,8 @@ export function DiscardPile({
         whileHover={onClick && !disabled ? { scale: 1.03 } : {}}
         onClick={!disabled ? onClick : undefined}
         className={`
-          w-20 h-28 
-          rounded-xl 
-          border-2 border-dashed border-emerald-600/50
-          bg-emerald-800/30
-          flex items-center justify-center
+          w-20 h-28 rounded-xl border-2 border-dashed border-emerald-600/50
+          bg-emerald-800/30 flex items-center justify-center
           ${onClick && !disabled ? 'cursor-pointer' : ''}
           ${highlighted ? 'ring-4 ring-cyan-400 animate-pulse' : ''}
         `}
@@ -212,39 +297,30 @@ export function DiscardPile({
       whileHover={onClick && !disabled ? { scale: 1.03 } : {}}
       whileTap={onClick && !disabled ? { scale: 0.98 } : {}}
       onClick={!disabled ? onClick : undefined}
-      className={`
-        relative
-        ${onClick && !disabled ? 'cursor-pointer' : ''}
-      `}
+      className={`relative ${onClick && !disabled ? 'cursor-pointer' : ''}`}
     >
-      {/* Show a few cards slightly offset */}
-      {cards.slice(0, 3).reverse().map((card, i) => (
+      {cards.slice(1, 4).reverse().map((card, i) => (
         <div
           key={card.id}
           className="absolute"
-          style={{
-            top: (2 - i) * 3,
-            left: (2 - i) * 2,
-            zIndex: i,
-          }}
+          style={{ top: (2 - i) * 3, left: (2 - i) * 2, zIndex: i }}
         >
-          <Card 
-            card={{ ...card, faceUp: i === cards.slice(0, 3).length - 1 }} 
-            size="lg"
-            highlighted={i === cards.slice(0, 3).length - 1 && highlighted}
-          />
+          <Card card={{ ...card, faceUp: false }} size="lg" />
         </div>
       ))}
       
-      {/* Visible top card */}
-      <div className="relative z-10" style={{ marginTop: 6, marginLeft: 4 }}>
-        <Card 
-          card={topCard} 
-          size="lg"
-          highlighted={highlighted}
-        />
-      </div>
+      <AnimatePresence mode="popLayout">
+        <motion.div 
+          key={topCard.id}
+          initial={{ scale: 0.5, y: -100, rotateZ: -20, opacity: 0 }}
+          animate={{ scale: 1, y: 0, rotateZ: 0, opacity: 1 }}
+          transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+          className="relative z-10" 
+          style={{ marginTop: 6, marginLeft: 4 }}
+        >
+          <Card card={topCard} size="lg" highlighted={highlighted} />
+        </motion.div>
+      </AnimatePresence>
     </motion.div>
   );
 }
-

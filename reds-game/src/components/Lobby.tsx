@@ -34,6 +34,7 @@ export function Lobby({ onGameStart }: LobbyProps) {
   const [shareCode, setShareCode] = useState('');
   const [copied, setCopied] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
+  const [deckCount, setDeckCount] = useState(1);
 
   // Initialize peer connection - always initialize on mount
   useEffect(() => {
@@ -85,6 +86,7 @@ export function Lobby({ onGameStart }: LobbyProps) {
             name,
             cards: [],
             isHost: false,
+            isReady: false,
             isConnected: true,
             hasSeenBottomCards: false,
             hasCalledReds: false,
@@ -220,7 +222,7 @@ export function Lobby({ onGameStart }: LobbyProps) {
         throw new Error('Invalid game code format');
       }
 
-      const { gameCode } = decoded;
+      const { gameCode, hostPeerId } = decoded;
       console.log('🎮 Joining room:', gameCode);
       
       joinGame(gameCode);
@@ -228,24 +230,20 @@ export function Lobby({ onGameStart }: LobbyProps) {
       const mp = getMultiplayerConnection();
       mp.setGameCode(gameCode);
       mp.setIsHost(false);
-      
-      // Wait for discovery before sending request
-      console.log('⏳ Waiting for host discovery...');
+
+      console.log('⏳ Connecting to host via PeerJS...');
       const timeout = setTimeout(() => {
-        setError('Discovery timed out. Try again or check your connection.');
+        setError('Connection timeout - make sure the host has the lobby open');
         setIsConnecting(false);
       }, 15000);
 
-      const cleanup = mp.onPeerJoined((peerId) => {
-        console.log('✨ Host discovered! Sending join request...');
-        clearTimeout(timeout);
-        
-        mp.sendToPeer(peerId, {
-          type: 'join_request',
-          payload: { name: playerName, peerId: mp.getPlayerId() },
-        });
-        
-        cleanup();
+      await mp.connectToHost(hostPeerId);
+      clearTimeout(timeout);
+
+      console.log('✨ Connected to host! Sending join request...');
+      mp.sendToPeer(hostPeerId, {
+        type: 'join_request',
+        payload: { name: playerName, peerId: mp.getPlayerId() },
       });
       
     } catch (err) {
@@ -262,7 +260,13 @@ export function Lobby({ onGameStart }: LobbyProps) {
       return;
     }
 
-    startGame();
+    // Limit to 10 players max
+    if (game.players.length > 10) {
+      setError('Maximum 10 players allowed');
+      return;
+    }
+
+    startGame(deckCount);
     
     const mp = getMultiplayerConnection();
     const currentGame = useGameStore.getState().game;
@@ -273,6 +277,13 @@ export function Lobby({ onGameStart }: LobbyProps) {
     
     onGameStart();
   };
+
+  // Auto-suggest 2 decks when more than 5 players
+  useEffect(() => {
+    if (game && game.players.length > 5 && deckCount === 1) {
+      setDeckCount(2);
+    }
+  }, [game?.players.length, deckCount]);
 
   const copyToClipboard = async () => {
     try {
@@ -311,7 +322,7 @@ export function Lobby({ onGameStart }: LobbyProps) {
           <h1 className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-red-500 via-rose-500 to-red-600 drop-shadow-lg">
             REDS
           </h1>
-          <p className="text-emerald-300 mt-2 text-sm tracking-wide">The Card Game</p>
+          <p className="text-emerald-300 mt-2 text-sm tracking-wide">Saimo Six Seven</p>
         </motion.div>
 
         <AnimatePresence mode="wait">
@@ -428,7 +439,7 @@ export function Lobby({ onGameStart }: LobbyProps) {
               {/* Players list */}
               <div className="mb-6">
                 <div className="text-emerald-300 text-sm mb-3">
-                  Players ({game.players.length}/6)
+                  Players ({game.players.length}/10)
                 </div>
                 <div className="space-y-2">
                   {game.players.map((player, idx) => (
@@ -440,7 +451,7 @@ export function Lobby({ onGameStart }: LobbyProps) {
                       className="flex items-center gap-3 p-3 bg-emerald-700/30 rounded-xl"
                     >
                       <div className={`w-3 h-3 rounded-full ${player.isConnected ? 'bg-green-500' : 'bg-gray-500'}`} />
-                      <span className="text-white font-medium">{player.name}</span>
+                      <span className="text-white font-medium flex-1">{player.name}</span>
                       {player.isHost && (
                         <span className="text-xs px-2 py-0.5 bg-amber-500 text-amber-950 rounded-full font-bold">
                           Host
@@ -448,6 +459,40 @@ export function Lobby({ onGameStart }: LobbyProps) {
                       )}
                     </motion.div>
                   ))}
+                </div>
+              </div>
+
+              {/* Deck Count Selector */}
+              <div className="mb-6 p-4 bg-black/30 rounded-xl">
+                <div className="text-emerald-400 text-xs mb-2 text-center">Number of Decks</div>
+                <div className="flex items-center justify-center gap-4">
+                  <motion.button
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={() => setDeckCount(Math.max(1, deckCount - 1))}
+                    disabled={deckCount <= 1}
+                    className="w-10 h-10 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-lg disabled:opacity-50 disabled:cursor-not-allowed text-xl"
+                  >
+                    −
+                  </motion.button>
+                  <div className="text-white font-bold text-2xl min-w-[3ch] text-center">
+                    {deckCount}
+                  </div>
+                  <motion.button
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={() => setDeckCount(Math.min(4, deckCount + 1))}
+                    disabled={deckCount >= 4}
+                    className="w-10 h-10 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-lg disabled:opacity-50 disabled:cursor-not-allowed text-xl"
+                  >
+                    +
+                  </motion.button>
+                </div>
+                <div className="text-emerald-500 text-xs mt-2 text-center">
+                  {deckCount === 1 ? '54 cards (1-5 players)' : `${deckCount * 54} cards`}
+                  {game.players.length > 5 && deckCount === 1 && (
+                    <span className="text-amber-400 ml-2">⚠️ Recommend 2+ decks</span>
+                  )}
                 </div>
               </div>
 
@@ -473,7 +518,7 @@ export function Lobby({ onGameStart }: LobbyProps) {
                 disabled={game.players.length < 2}
                 className="w-full py-4 bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Start Game ({game.players.length}/2 minimum)
+                Launch Game ({game.players.length}/2 min)
               </motion.button>
 
               <motion.button
@@ -516,14 +561,13 @@ export function Lobby({ onGameStart }: LobbyProps) {
                           className="flex items-center gap-3 p-3 bg-emerald-700/30 rounded-xl"
                         >
                           <div className={`w-3 h-3 rounded-full ${player.isConnected ? 'bg-green-500' : 'bg-gray-500'}`} />
-                          <span className="text-white font-medium">{player.name}</span>
+                          <span className="text-white font-medium flex-1">
+                            {player.name} {player.id === peerId && '(You)'}
+                          </span>
                           {player.isHost && (
                             <span className="text-xs px-2 py-0.5 bg-amber-500 text-amber-950 rounded-full font-bold">
                               Host
                             </span>
-                          )}
-                          {player.id === peerId && (
-                            <span className="text-xs text-emerald-400">(You)</span>
                           )}
                         </motion.div>
                       ))}

@@ -1,181 +1,82 @@
-import Peer from 'simple-peer';
-import { GameState, GameMessage, Player } from '@/types/game';
+import Peer, { DataConnection } from 'peerjs';
+import { GameState, GameMessage } from '@/types/game';
 import { v4 as uuidv4 } from 'uuid';
-
-// Polyfill for simple-peer in Next.js environment
-if (typeof window !== 'undefined') {
-  (window as any).global = window;
-  if (!(window as any).process) {
-    (window as any).process = { nextTick: (fn: Function) => setTimeout(fn, 0), env: {} };
-  }
-}
 
 type MessageHandler = (message: GameMessage, senderId: string) => void;
 
-class SignalingChannel {
-  private bc: BroadcastChannel | null = null;
-  private messageHandlers: Set<(data: any) => void> = new Set();
-  private gameCode: string = '';
-  private playerId: string = '';
+function parseBooleanEnv(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (value.toLowerCase() === 'true') return true;
+  if (value.toLowerCase() === 'false') return false;
+  return undefined;
+}
 
-  constructor(gameCode: string, playerId: string) {
-    this.gameCode = gameCode;
-    this.playerId = playerId;
-    if (typeof window !== 'undefined') {
-      this.bc = new BroadcastChannel(`reds-signaling-${gameCode}`);
-      this.bc.onmessage = (event) => {
-        if (event.data.from === this.playerId) return;
-        this.messageHandlers.forEach(handler => handler(event.data));
-      };
-    }
-  }
+let cachedTurnConfig: { enabled: boolean; urls: string[]; username: string; credential: string } | null = null;
 
-  onMessage(handler: (data: any) => void) {
-    this.messageHandlers.add(handler);
-    return () => this.messageHandlers.delete(handler);
-  }
-
-  send(data: any) {
-    if (this.bc) {
-      this.bc.postMessage({ ...data, from: this.playerId });
-    }
-  }
-
-  close() {
-    this.bc?.close();
-    this.bc = null;
-    this.messageHandlers.clear();
+async function getTurnConfig(): Promise<{ enabled: boolean; urls: string[]; username: string; credential: string }> {
+  if (cachedTurnConfig) return cachedTurnConfig;
+  try {
+    const res = await fetch('/api/turn-config', { cache: 'no-store' });
+    const data = (await res.json()) as { enabled: boolean; urls: string[]; username: string; credential: string };
+    cachedTurnConfig = data;
+    return data;
+  } catch {
+    cachedTurnConfig = { enabled: false, urls: [], username: '', credential: '' };
+    return cachedTurnConfig;
   }
 }
 
+async function getIceServers(): Promise<RTCIceServer[]> {
+  const servers: RTCIceServer[] = [
+    // Cloudflare STUN
+    { urls: 'stun:stun.cloudflare.com:3478' },
+
+    // Metered STUN (harmless and sometimes helps)
+    { urls: 'stun:stun.relay.metered.ca:80' },
+
+    // Google STUN (extended list / ports)
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.l.google.com:5349' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:3478' },
+    { urls: 'stun:stun1.l.google.com:5349' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:5349' },
+    { urls: 'stun:stun3.l.google.com:3478' },
+    { urls: 'stun:stun3.l.google.com:5349' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:5349' },
+  ];
+
+  // TURN config fetched at runtime from Vercel (works even when Next doesn't inline env vars)
+  const turn = await getTurnConfig();
+  console.log('🧊 TURN config from /api/turn-config:', {
+    enabled: turn.enabled,
+    urlsCount: turn.urls.length,
+    username: Boolean(turn.username),
+    credential: Boolean(turn.credential),
+  });
+
+  if (turn.enabled) {
+    servers.unshift({
+      urls: turn.urls,
+      username: turn.username,
+      credential: turn.credential,
+    });
+    console.log('🧊 TURN enabled for better cross-network connectivity');
+  }
+
+  return servers;
+}
+
 class MultiplayerConnection {
-  private peers: Map<string, Peer.Instance> = new Map();
+  private peer: Peer | null = null;
+  private conns: Map<string, DataConnection> = new Map();
   private messageHandlers: Set<MessageHandler> = new Set();
   private gameCode: string = '';
   private playerId: string = uuidv4();
   private isHost: boolean = false;
-  private signaling: SignalingChannel | null = null;
   private onPeerConnect: ((peerId: string) => void) | null = null;
-  private discoveryInterval: any = null;
-  
-  // Track "Virtual" peers connected via BroadcastChannel (local tabs only)
-  private virtualPeers: Set<string> = new Set();
-
-  async initialize(): Promise<string> {
-    console.log('✨ Simple-peer (Hybrid) initialized with ID:', this.playerId);
-    return this.playerId;
-  }
-
-  private setupSignaling(gameCode: string) {
-    if (this.signaling) this.signaling.close();
-    if (this.discoveryInterval) clearInterval(this.discoveryInterval);
-
-    this.signaling = new SignalingChannel(gameCode, this.playerId);
-
-    this.signaling.onMessage((data) => {
-      const { type, payload, from, to } = data;
-
-      // 1. Discovery handling
-      if (type === 'discovery' && this.isHost) {
-        console.log('👥 Host discovered peer:', from);
-        // Instant "Virtual" connection for local tabs
-        this.virtualPeers.add(from);
-        this.signaling?.send({ type: 'discovery_ack', to: from });
-        
-        // Also start WebRTC for cross-device support
-        if (!this.peers.has(from)) {
-          setTimeout(() => this.initiateWebRTC(from), 1000);
-        }
-      } 
-      
-      else if (type === 'discovery_ack' && to === this.playerId) {
-        console.log('✅ Discovery acknowledged by host');
-        this.virtualPeers.add(from);
-        if (this.onPeerConnect) this.onPeerConnect(from);
-      }
-
-      // 2. WebRTC Signaling
-      else if (type === 'signal' && to === this.playerId) {
-        let peer = this.peers.get(from);
-        if (!peer || peer.destroyed) {
-          peer = this.createWebRTCPeer(from, false);
-        }
-        peer.signal(payload);
-      }
-
-      // 3. Data fallback (Virtual Peer path)
-      else if (type === 'data' && (to === this.playerId || !to)) {
-        // Only process if we don't have a solid WebRTC connection to this peer yet
-        const webrtcPeer = this.peers.get(from);
-        if (!webrtcPeer || !webrtcPeer.connected) {
-          try {
-            const message = JSON.parse(payload) as GameMessage;
-            this.messageHandlers.forEach(handler => handler(message, from));
-          } catch (e) {}
-        }
-      }
-    });
-
-    if (!this.isHost) {
-      this.signaling.send({ type: 'discovery' });
-      this.discoveryInterval = setInterval(() => {
-        if (this.getConnectedPeers().length === 0) {
-          this.signaling?.send({ type: 'discovery' });
-        }
-      }, 3000);
-    }
-  }
-
-  private initiateWebRTC(peerId: string) {
-    if (this.peers.has(peerId)) return;
-    this.createWebRTCPeer(peerId, true);
-  }
-
-  private createWebRTCPeer(peerId: string, initiator: boolean): Peer.Instance {
-    console.log(`🛠 Creating WebRTC peer (${initiator ? 'initiator' : 'receiver'}) for:`, peerId);
-    
-    const peer = new Peer({
-      initiator,
-      trickle: true, // Enable trickle for better compatibility
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ]
-      }
-    });
-
-    peer.on('signal', (signal) => {
-      this.signaling?.send({ type: 'signal', payload: signal, to: peerId });
-    });
-
-    peer.on('connect', () => {
-      console.log('⚡ WebRTC connected to:', peerId);
-      if (this.onPeerConnect) this.onPeerConnect(peerId);
-    });
-
-    peer.on('data', (data) => {
-      try {
-        const message = JSON.parse(data.toString()) as GameMessage;
-        this.messageHandlers.forEach(handler => handler(message, peerId));
-      } catch (e) {}
-    });
-
-    peer.on('close', () => {
-      this.peers.delete(peerId);
-      this.virtualPeers.delete(peerId);
-      this.notifyPlayerLeft(peerId);
-    });
-
-    peer.on('error', (err) => {
-      console.warn('⚠️ WebRTC connection failed, falling back to BroadcastChannel:', err.message);
-      peer.destroy();
-      this.peers.delete(peerId);
-    });
-
-    this.peers.set(peerId, peer);
-    return peer;
-  }
 
   private notifyPlayerLeft(peerId: string) {
     const message: GameMessage = {
@@ -187,6 +88,68 @@ class MultiplayerConnection {
     this.messageHandlers.forEach(handler => handler(message, peerId));
   }
 
+  private attachConn(conn: DataConnection) {
+    const remoteId = conn.peer;
+    this.conns.set(remoteId, conn);
+
+    // Extra diagnostics to help debug NAT issues
+    try {
+      const pc = (conn as any).peerConnection as RTCPeerConnection | undefined;
+      if (pc) {
+        pc.oniceconnectionstatechange = () => {
+          console.log(`🧊 ICE(${remoteId}):`, pc.iceConnectionState);
+        };
+        pc.onconnectionstatechange = () => {
+          console.log(`🔌 PC(${remoteId}):`, pc.connectionState);
+        };
+      }
+    } catch {}
+
+    conn.on('open', () => {
+      console.log('🔗 PeerJS connected:', remoteId);
+      this.onPeerConnect?.(remoteId);
+    });
+
+    conn.on('data', (data: unknown) => {
+      try {
+        const msg = typeof data === 'string' ? (JSON.parse(data) as GameMessage) : (data as GameMessage);
+        this.messageHandlers.forEach(handler => handler(msg, remoteId));
+      } catch {
+        // ignore malformed packets
+      }
+    });
+
+    conn.on('close', () => {
+      this.conns.delete(remoteId);
+      this.notifyPlayerLeft(remoteId);
+    });
+
+    conn.on('error', (err: unknown) => {
+      console.warn('⚠️ PeerJS connection error:', err);
+    });
+  }
+
+  private async connectToPeer(peerId: string, timeoutMs = 15000): Promise<void> {
+    if (!this.peer) throw new Error('PeerJS not initialized');
+    const existing = this.conns.get(peerId);
+    if (existing?.open) return;
+
+    const conn = this.peer.connect(peerId, { reliable: true, serialization: 'json' });
+    this.attachConn(conn);
+
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('Connection timeout')), timeoutMs);
+      conn.once('open', () => {
+        clearTimeout(t);
+        resolve();
+      });
+      conn.once('error', (err: unknown) => {
+        clearTimeout(t);
+        reject(err);
+      });
+    });
+  }
+
   onMessage(handler: MessageHandler) {
     this.messageHandlers.add(handler);
     return () => { this.messageHandlers.delete(handler); };
@@ -194,7 +157,7 @@ class MultiplayerConnection {
 
   onPeerJoined(callback: (peerId: string) => void) {
     this.onPeerConnect = callback;
-    // Notify about already connected virtual or webrtc peers
+    // Notify about already connected peers
     this.getConnectedPeers().forEach(id => callback(id));
     return () => { this.onPeerConnect = null; };
   }
@@ -206,22 +169,8 @@ class MultiplayerConnection {
       senderId: this.playerId,
     };
     const data = JSON.stringify(fullMessage);
-
-    // Try WebRTC first for all peers
-    this.peers.forEach((peer, id) => {
-      if (peer.connected) {
-        peer.send(data);
-      } else {
-        // Fallback to signaling channel for virtual/connecting peers
-        this.signaling?.send({ type: 'data', payload: data, to: id });
-      }
-    });
-
-    // Also send to virtual peers that might not have a WebRTC object yet
-    this.virtualPeers.forEach(id => {
-      if (!this.peers.has(id)) {
-        this.signaling?.send({ type: 'data', payload: data, to: id });
-      }
+    this.conns.forEach((conn) => {
+      if (conn.open) conn.send(data);
     });
   }
 
@@ -232,14 +181,16 @@ class MultiplayerConnection {
       senderId: this.playerId,
     };
     const data = JSON.stringify(fullMessage);
-
-    const peer = this.peers.get(peerId);
-    if (peer?.connected) {
-      peer.send(data);
-    } else {
-      // Fallback for virtual peers
-      this.signaling?.send({ type: 'data', payload: data, to: peerId });
+    const conn = this.conns.get(peerId);
+    if (conn?.open) {
+      conn.send(data);
+      return;
     }
+    // Fire and forget: attempt to connect then send
+    this.connectToPeer(peerId).then(() => {
+      const c = this.conns.get(peerId);
+      if (c?.open) c.send(data);
+    }).catch(() => {});
   }
 
   broadcastState(state: GameState) {
@@ -251,7 +202,6 @@ class MultiplayerConnection {
 
   setGameCode(code: string) {
     this.gameCode = code;
-    this.setupSignaling(code);
   }
 
   setIsHost(isHost: boolean) {
@@ -271,25 +221,82 @@ class MultiplayerConnection {
   }
 
   getConnectedPeers(): string[] {
-    const allPeers = new Set([...this.virtualPeers, ...Array.from(this.peers.keys()).filter(id => this.peers.get(id)?.connected)]);
-    return Array.from(allPeers);
+    return Array.from(this.conns.entries())
+      .filter(([, conn]) => conn.open)
+      .map(([id]) => id);
   }
 
   isReady(): boolean {
-    return true;
+    return Boolean(this.peer && (this.peer as any).open);
   }
 
   isUsingBroadcastChannel(): boolean {
-    return true;
+    return false;
+  }
+
+  async initialize(): Promise<string> {
+    if (typeof window === 'undefined') return this.playerId;
+    if (this.peer && (this.peer as any).open) return this.playerId;
+
+    const iceServers = await getIceServers();
+    const hasTurn = iceServers.some((s) => {
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+      return urls.some((u) => typeof u === 'string' && (u.startsWith('turn:') || u.startsWith('turns:')));
+    });
+    console.log('🧊 ICE servers:', iceServers.map(s => s.urls));
+    console.log('🧊 TURN present in config:', hasTurn);
+
+    const forceRelay = parseBooleanEnv(process.env.NEXT_PUBLIC_FORCE_RELAY) ?? false;
+    if (forceRelay) console.log('🧊 Forcing TURN relay-only (NEXT_PUBLIC_FORCE_RELAY=true)');
+
+    const host = process.env.NEXT_PUBLIC_PEERJS_HOST || '0.peerjs.com';
+    const port = Number(process.env.NEXT_PUBLIC_PEERJS_PORT || 443);
+    const secure = parseBooleanEnv(process.env.NEXT_PUBLIC_PEERJS_SECURE) ?? true;
+    const path = process.env.NEXT_PUBLIC_PEERJS_PATH || '/';
+
+    this.peer = new Peer(this.playerId, {
+      host,
+      port,
+      secure,
+      path,
+      config: { iceServers, iceTransportPolicy: forceRelay ? 'relay' : 'all' },
+      debug: 3,
+    });
+
+    this.peer.on('connection', (conn: DataConnection) => {
+      // Host receives incoming connections, joiners may also receive (rare) if others connect to them.
+      this.attachConn(conn);
+    });
+
+    this.peer.on('disconnected', () => {
+      console.warn('⚠️ PeerJS disconnected from signaling server');
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('PeerJS initialization timeout')), 15000);
+      this.peer!.once('open', () => {
+        clearTimeout(t);
+        console.log('✨ PeerJS initialized with ID:', this.playerId, 'via', `${secure ? 'wss' : 'ws'}://${host}:${port}${path}`);
+        resolve();
+      });
+      this.peer!.once('error', (err: unknown) => {
+        clearTimeout(t);
+        reject(err);
+      });
+    });
+
+    return this.playerId;
+  }
+
+  async connectToHost(hostPeerId: string) {
+    await this.connectToPeer(hostPeerId);
   }
 
   disconnect() {
-    if (this.discoveryInterval) clearInterval(this.discoveryInterval);
-    this.peers.forEach(peer => peer.destroy());
-    this.peers.clear();
-    this.virtualPeers.clear();
-    this.signaling?.close();
-    this.signaling = null;
+    this.conns.forEach((c) => c.close());
+    this.conns.clear();
+    this.peer?.destroy();
+    this.peer = null;
   }
 }
 

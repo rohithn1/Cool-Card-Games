@@ -4,19 +4,35 @@ import { v4 as uuidv4 } from 'uuid';
 const SUITS: Suit[] = ['hearts', 'diamonds', 'clubs', 'spades'];
 const RANKS: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
 
-// Create a new deck of 52 cards
-export function createDeck(): Card[] {
+// Create a new deck of 52 cards + 2 Jokers (per deck)
+export function createDeck(deckCount: number = 1): Card[] {
   const deck: Card[] = [];
   
-  for (const suit of SUITS) {
-    for (const rank of RANKS) {
-      deck.push({
-        id: uuidv4(),
-        suit,
-        rank,
-        faceUp: false,
-      });
+  for (let d = 0; d < deckCount; d++) {
+    for (const suit of SUITS) {
+      for (const rank of RANKS) {
+        deck.push({
+          id: uuidv4(),
+          suit,
+          rank,
+          faceUp: false,
+        });
+      }
     }
+    
+    // Add 2 Jokers per deck
+    deck.push({
+      id: uuidv4(),
+      suit: 'joker',
+      rank: 'JOKER',
+      faceUp: false,
+    });
+    deck.push({
+      id: uuidv4(),
+      suit: 'joker',
+      rank: 'JOKER',
+      faceUp: false,
+    });
   }
   
   return deck;
@@ -88,11 +104,19 @@ export function generateGameCode(): string {
 
 // Get card display info
 export function getCardDisplay(card: Card): { symbol: string; color: string } {
+  if (card.rank === 'JOKER') {
+    return {
+      symbol: '★',
+      color: 'text-purple-600',
+    };
+  }
+  
   const suitSymbols: Record<Suit, string> = {
     hearts: '♥',
     diamonds: '♦',
     clubs: '♣',
     spades: '♠',
+    joker: '★',
   };
   
   const isRed = card.suit === 'hearts' || card.suit === 'diamonds';
