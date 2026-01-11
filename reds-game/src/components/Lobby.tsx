@@ -119,6 +119,12 @@ export function Lobby({ onGameStart }: LobbyProps) {
         }
 
         case 'join_response': {
+          // Clear the response timeout if it exists
+          if ((window as any).__joinResponseTimeout) {
+            clearTimeout((window as any).__joinResponseTimeout);
+            delete (window as any).__joinResponseTimeout;
+          }
+          
           // Joiner receives game state
           const { success, game: gameState, targetId } = message.payload as { 
             success: boolean; 
@@ -150,15 +156,28 @@ export function Lobby({ onGameStart }: LobbyProps) {
         }
 
         case 'state_sync': {
+          // Clear the response timeout if it exists (state sync means we're connected)
+          if ((window as any).__joinResponseTimeout) {
+            clearTimeout((window as any).__joinResponseTimeout);
+            delete (window as any).__joinResponseTimeout;
+          }
+          
           // Receive state update from host
           const state = message.payload as typeof game;
           if (state) {
             syncState(state);
+            setIsConnecting(false);
           }
           break;
         }
 
         case 'game_start': {
+          // Clear any pending timeouts
+          if ((window as any).__joinResponseTimeout) {
+            clearTimeout((window as any).__joinResponseTimeout);
+            delete (window as any).__joinResponseTimeout;
+          }
+          
           const state = message.payload as typeof game;
           if (state) {
             syncState(state);
@@ -232,14 +251,11 @@ export function Lobby({ onGameStart }: LobbyProps) {
       mp.setGameCode(gameCode);
       mp.setIsHost(false);
 
-      console.log('⏳ Connecting to host via PeerJS...');
-      const timeout = setTimeout(() => {
-        setError('Connection timeout - make sure the host has the lobby open');
-        setIsConnecting(false);
-      }, 15000);
-
+      console.log('⏳ Connecting to host via PeerJS (with auto-retry)...');
+      
+      // Let the multiplayer module handle retries and timeouts
+      // No separate timeout here - connectToHost has built-in retry logic
       await mp.connectToHost(hostPeerId);
-      clearTimeout(timeout);
 
       console.log('✨ Connected to host! Sending join request...');
       mp.sendToPeer(hostPeerId, {
@@ -247,10 +263,34 @@ export function Lobby({ onGameStart }: LobbyProps) {
         payload: { name: playerName, peerId: mp.getPlayerId() },
       });
       
+      // Set a timeout for receiving the join response (separate from connection)
+      const responseTimeout = setTimeout(() => {
+        const currentGame = useGameStore.getState().game;
+        // Only show error if we haven't received game state yet
+        if (!currentGame || currentGame.players.length === 0) {
+          setError('Connected but no response from host. They may have closed the lobby.');
+          setIsConnecting(false);
+        }
+      }, 10000);
+      
+      // Store timeout ID to clear it on successful join
+      (window as any).__joinResponseTimeout = responseTimeout;
+      
     } catch (err) {
       console.error('Failed to join game:', err);
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-      setError(`Failed to join game: ${errorMessage}`);
+      
+      // Provide more helpful error messages
+      let userMessage = errorMessage;
+      if (errorMessage.includes('timeout')) {
+        userMessage = 'Connection timed out. Make sure the host has the lobby open and try again.';
+      } else if (errorMessage.includes('Could not connect') || errorMessage.includes('unavailable')) {
+        userMessage = 'Could not reach the host. Check your internet connection and try again.';
+      } else if (errorMessage.includes('not open') || errorMessage.includes('not initialized')) {
+        userMessage = 'Network connection lost. Please refresh and try again.';
+      }
+      
+      setError(userMessage);
       setIsConnecting(false);
     }
   };
@@ -646,7 +686,8 @@ export function Lobby({ onGameStart }: LobbyProps) {
           className="mt-6 text-center text-emerald-500 text-xs"
         >
           <p>Goal: Have the lowest sum then call &quot;Reds!&quot;</p>
-          <p className="mt-1">Card values: A=1, 2-10, J=11, Q=12, Black K=13, Red K=-2</p>
+          <p className="mt-1">Card values: Joker=0, Ace=1, 2-10, Jack=11, Queen=12, Black King=13, Red King=-2</p>
+          <p className="mt-3 text-emerald-600/60"><span className="text-emerald-400">v</span><span className="text-emerald-500">1</span><span className="text-emerald-400">.</span><span className="text-emerald-500">0</span><span className="text-emerald-400">.</span><span className="text-emerald-500">0</span>-beta</p>
         </motion.div>
       </motion.div>
     </div>

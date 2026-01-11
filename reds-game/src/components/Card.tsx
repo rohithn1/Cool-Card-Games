@@ -9,14 +9,26 @@ interface CardProps {
   onClick?: () => void;
   selected?: boolean;
   highlighted?: boolean;
-  size?: 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
   className?: string;
   disabled?: boolean;
   showPeek?: boolean;
 }
 
 // Size configurations - all dimensions scale proportionally
+// xs is for mobile screens, sm for small mobile, md for tablets, lg for desktop
 const sizeConfig = {
+  xs: {
+    width: 'w-10',
+    height: 'h-14',
+    cornerRank: 'text-[8px]',
+    cornerSymbol: 'text-[6px]',
+    centerSymbol: 'text-xl',
+    jokerLetter: 'text-[4px]',
+    jokerCenter: 'text-lg',
+    cornerOffset: 'top-0.5 left-0.5',
+    border: 'border',
+  },
   sm: {
     width: 'w-12',
     height: 'h-16',
@@ -29,6 +41,17 @@ const sizeConfig = {
     border: 'border',
   },
   md: {
+    width: 'w-14',
+    height: 'h-20',
+    cornerRank: 'text-[11px]',
+    cornerSymbol: 'text-[9px]',
+    centerSymbol: 'text-2xl',
+    jokerLetter: 'text-[5px]',
+    jokerCenter: 'text-xl',
+    cornerOffset: 'top-0.5 left-1',
+    border: 'border',
+  },
+  lg: {
     width: 'w-16',
     height: 'h-22',
     cornerRank: 'text-xs',
@@ -39,7 +62,7 @@ const sizeConfig = {
     cornerOffset: 'top-0.5 left-1',
     border: 'border-2',
   },
-  lg: {
+  xl: {
     width: 'w-20',
     height: 'h-28',
     cornerRank: 'text-sm',
@@ -48,17 +71,6 @@ const sizeConfig = {
     jokerLetter: 'text-[8px]',
     jokerCenter: 'text-3xl',
     cornerOffset: 'top-1 left-1.5',
-    border: 'border-2',
-  },
-  xl: {
-    width: 'w-24',
-    height: 'h-32',
-    cornerRank: 'text-base',
-    cornerSymbol: 'text-sm',
-    centerSymbol: 'text-6xl',
-    jokerLetter: 'text-[10px]',
-    jokerCenter: 'text-4xl',
-    cornerOffset: 'top-1 left-2',
     border: 'border-2',
   },
 };
@@ -204,7 +216,7 @@ export function Card({
   );
 }
 
-// Deck component (face down pile) with animation
+// Deck component (face down pile) with animation - responsive sizing
 export function Deck({
   count,
   onClick,
@@ -221,7 +233,7 @@ export function Deck({
       whileHover={onClick && !disabled ? { scale: 1.03 } : {}}
       whileTap={onClick && !disabled ? { scale: 0.95 } : {}}
       onClick={!disabled ? onClick : undefined}
-      className={`relative w-20 h-28 ${onClick && !disabled ? 'cursor-pointer' : ''}`}
+      className={`relative w-14 h-20 sm:w-16 sm:h-22 md:w-20 md:h-28 ${onClick && !disabled ? 'cursor-pointer' : ''}`}
     >
       <AnimatePresence>
         {[...Array(Math.min(5, count))].map((_, i) => (
@@ -232,8 +244,8 @@ export function Deck({
             exit={{ y: -50, opacity: 0, rotateZ: 5 }}
             transition={{ duration: 0.2 }}
             className={`
-              absolute w-full h-full rounded-xl shadow-lg overflow-hidden
-              ${highlighted && i === 0 ? 'ring-4 ring-yellow-400 shadow-yellow-400/30' : ''}
+              absolute w-full h-full rounded-lg sm:rounded-xl shadow-lg overflow-hidden
+              ${highlighted && i === 0 ? 'ring-2 sm:ring-4 ring-yellow-400 shadow-yellow-400/30' : ''}
             `}
             style={{ top: -i * 1.5, left: -i * 0.5, zIndex: 5 - i }}
           >
@@ -241,8 +253,8 @@ export function Deck({
               src="/card-back.png"
               alt="Card back"
               fill
-              className="object-cover rounded-xl"
-              sizes="80px"
+              className="object-cover rounded-lg sm:rounded-xl"
+              sizes="(max-width: 640px) 56px, 80px"
               priority={i === 0}
             />
           </motion.div>
@@ -253,7 +265,7 @@ export function Deck({
         key={count}
         initial={{ scale: 1.2 }}
         animate={{ scale: 1 }}
-        className="absolute -bottom-2 -right-2 bg-amber-500 text-amber-950 rounded-full w-7 h-7 flex items-center justify-center text-xs font-bold shadow-md z-10"
+        className="absolute -bottom-1.5 -right-1.5 sm:-bottom-2 sm:-right-2 bg-amber-500 text-amber-950 rounded-full w-5 h-5 sm:w-7 sm:h-7 flex items-center justify-center text-[10px] sm:text-xs font-bold shadow-md z-10"
       >
         {count}
       </motion.div>
@@ -261,7 +273,7 @@ export function Deck({
   );
 }
 
-// Discard pile component with animation
+// Discard pile component with animation - responsive sizing
 export function DiscardPile({
   cards,
   onClick,
@@ -279,13 +291,13 @@ export function DiscardPile({
         whileHover={onClick && !disabled ? { scale: 1.03 } : {}}
         onClick={!disabled ? onClick : undefined}
         className={`
-          w-20 h-28 rounded-xl border-2 border-dashed border-emerald-600/50
+          w-14 h-20 sm:w-16 sm:h-22 md:w-20 md:h-28 rounded-lg sm:rounded-xl border-2 border-dashed border-emerald-600/50
           bg-emerald-800/30 flex items-center justify-center
           ${onClick && !disabled ? 'cursor-pointer' : ''}
-          ${highlighted ? 'ring-4 ring-cyan-400 animate-pulse' : ''}
+          ${highlighted ? 'ring-2 sm:ring-4 ring-cyan-400 animate-pulse' : ''}
         `}
       >
-        <span className="text-emerald-600/50 text-xs">Discard</span>
+        <span className="text-emerald-600/50 text-[10px] sm:text-xs">Discard</span>
       </motion.div>
     );
   }
@@ -303,18 +315,20 @@ export function DiscardPile({
         <div
           key={card.id}
           className="absolute"
-          style={{ top: (2 - i) * 3, left: (2 - i) * 2, zIndex: i }}
+          style={{ top: (2 - i) * 2, left: (2 - i) * 1.5, zIndex: i }}
         >
-          <Card card={{ ...card, faceUp: false }} size="lg" />
+          <Card card={{ ...card, faceUp: false }} size="md" className="sm:hidden" />
+          <Card card={{ ...card, faceUp: false }} size="lg" className="hidden sm:block" />
         </div>
       ))}
       
       {/* Top card - no animation, just render statically (movement handled by table overlay) */}
       <div 
         className="relative z-10" 
-        style={{ marginTop: 6, marginLeft: 4 }}
+        style={{ marginTop: 4, marginLeft: 3 }}
       >
-        <Card card={topCard} size="lg" highlighted={highlighted} />
+        <Card card={topCard} size="md" highlighted={highlighted} className="sm:hidden" />
+        <Card card={topCard} size="lg" highlighted={highlighted} className="hidden sm:block" />
       </div>
     </motion.div>
   );

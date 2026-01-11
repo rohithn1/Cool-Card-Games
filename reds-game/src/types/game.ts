@@ -86,8 +86,9 @@ export interface SwapAnimation {
   // For regular swaps (player's card <-> opponent's card)
   sourcePlayerId?: string;
   sourceCardIndex?: number;
-  targetPlayerId: string;
-  targetCardIndex: number;
+  // Optional during 'selecting' phase, required during 'animating'
+  targetPlayerId?: string;
+  targetCardIndex?: number;
   // For _others swaps (opponent 1 <-> opponent 2)
   secondTargetPlayerId?: string;
   secondTargetCardIndex?: number;

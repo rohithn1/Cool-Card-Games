@@ -77,6 +77,10 @@ class MultiplayerConnection {
   private playerId: string = uuidv4();
   private isHost: boolean = false;
   private onPeerConnect: ((peerId: string) => void) | null = null;
+  private visibilityHandler: (() => void) | null = null;
+  private reconnectAttempts: number = 0;
+  private maxReconnectAttempts: number = 5;
+  private knownPeers: Set<string> = new Set(); // Track peers we should be connected to
 
   private notifyPlayerLeft(peerId: string) {
     const message: GameMessage = {
@@ -88,19 +92,139 @@ class MultiplayerConnection {
     this.messageHandlers.forEach(handler => handler(message, peerId));
   }
 
+  // Handle visibility changes (phone sleep/wake)
+  private setupVisibilityHandler() {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    
+    // Remove existing handler if any
+    if (this.visibilityHandler) {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+    }
+    
+    this.visibilityHandler = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('📱 App became visible - checking connections...');
+        this.handleVisibilityResume();
+      }
+    };
+    
+    document.addEventListener('visibilitychange', this.visibilityHandler);
+  }
+  
+  private async handleVisibilityResume() {
+    // Check if peer is still connected to signaling server
+    if (!this.peer || this.peer.destroyed) {
+      console.log('🔄 Peer destroyed, full reinitialization needed');
+      // Notify that reconnection is needed - let the UI handle this
+      this.notifyReconnectionNeeded();
+      return;
+    }
+    
+    if (!(this.peer as any).open) {
+      console.log('🔄 Peer disconnected from signaling, attempting reconnect...');
+      try {
+        this.peer.reconnect();
+        // Wait a bit for reconnection
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch (e) {
+        console.error('Failed to reconnect to signaling:', e);
+        this.notifyReconnectionNeeded();
+        return;
+      }
+    }
+    
+    // Check and reconnect to known peers
+    await this.reconnectToKnownPeers();
+  }
+  
+  private async reconnectToKnownPeers() {
+    const disconnectedPeers = Array.from(this.knownPeers).filter(peerId => {
+      const conn = this.conns.get(peerId);
+      return !conn || !conn.open;
+    });
+    
+    if (disconnectedPeers.length === 0) {
+      console.log('✅ All peer connections are healthy');
+      return;
+    }
+    
+    console.log(`🔄 Reconnecting to ${disconnectedPeers.length} peers...`);
+    
+    for (const peerId of disconnectedPeers) {
+      try {
+        await this.connectToPeer(peerId, 15000, 2);
+        console.log(`✅ Reconnected to ${peerId.slice(0, 8)}`);
+      } catch (e) {
+        console.warn(`⚠️ Failed to reconnect to ${peerId.slice(0, 8)}:`, e);
+      }
+    }
+  }
+  
+  private notifyReconnectionNeeded() {
+    const message: GameMessage = {
+      type: 'player_left', // Reuse existing type to trigger reconnection UI
+      payload: { playerId: this.playerId, needsReconnect: true },
+      timestamp: Date.now(),
+      senderId: this.playerId,
+    };
+    this.messageHandlers.forEach(handler => handler(message, this.playerId));
+  }
+  
+  // Track a peer we should stay connected to
+  addKnownPeer(peerId: string) {
+    this.knownPeers.add(peerId);
+  }
+  
+  // Remove a peer from tracking
+  removeKnownPeer(peerId: string) {
+    this.knownPeers.delete(peerId);
+  }
+  
+  // Get connection health status
+  getConnectionHealth(): { total: number; connected: number; peers: Array<{ id: string; connected: boolean }> } {
+    const peers = Array.from(this.knownPeers).map(peerId => ({
+      id: peerId,
+      connected: this.conns.get(peerId)?.open ?? false,
+    }));
+    return {
+      total: peers.length,
+      connected: peers.filter(p => p.connected).length,
+      peers,
+    };
+  }
+
   private attachConn(conn: DataConnection) {
+    // Safety check - conn must be defined
+    if (!conn) {
+      console.error('❌ attachConn called with undefined connection');
+      return;
+    }
+    
     const remoteId = conn.peer;
+    if (!remoteId) {
+      console.error('❌ Connection has no peer ID');
+      return;
+    }
+    
     this.conns.set(remoteId, conn);
+    this.knownPeers.add(remoteId); // Track this peer for reconnection
 
     // Extra diagnostics to help debug NAT issues
     try {
       const pc = (conn as any).peerConnection as RTCPeerConnection | undefined;
       if (pc) {
         pc.oniceconnectionstatechange = () => {
-          console.log(`🧊 ICE(${remoteId}):`, pc.iceConnectionState);
+          const state = pc.iceConnectionState;
+          console.log(`🧊 ICE(${remoteId.slice(0, 8)}):`, state);
+          
+          // Handle ICE failures with restart attempt
+          if (state === 'failed' && pc.restartIce) {
+            console.log('🔄 Attempting ICE restart...');
+            pc.restartIce();
+          }
         };
         pc.onconnectionstatechange = () => {
-          console.log(`🔌 PC(${remoteId}):`, pc.connectionState);
+          console.log(`🔌 PC(${remoteId.slice(0, 8)}):`, pc.connectionState);
         };
       }
     } catch {}
@@ -129,25 +253,79 @@ class MultiplayerConnection {
     });
   }
 
-  private async connectToPeer(peerId: string, timeoutMs = 15000): Promise<void> {
+  private async connectToPeer(peerId: string, timeoutMs = 20000, maxRetries = 3): Promise<void> {
     if (!this.peer) throw new Error('PeerJS not initialized');
+    
+    // Check if peer is actually ready/open
+    if (!(this.peer as any).open) {
+      throw new Error('PeerJS peer is not open - try again');
+    }
+    
     const existing = this.conns.get(peerId);
     if (existing?.open) return;
 
-    const conn = this.peer.connect(peerId, { reliable: true, serialization: 'json' });
-    this.attachConn(conn);
+    let lastError: Error | null = null;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`🔄 Connection attempt ${attempt}/${maxRetries} to ${peerId.slice(0, 8)}...`);
+        
+        // Verify peer is still valid before each attempt
+        if (!this.peer || !(this.peer as any).open) {
+          throw new Error('PeerJS peer became unavailable');
+        }
+        
+        // Close any existing failed connection before retrying
+        const existingConn = this.conns.get(peerId);
+        if (existingConn && !existingConn.open) {
+          try { existingConn.close(); } catch {}
+          this.conns.delete(peerId);
+        }
+        
+        const conn = this.peer.connect(peerId, { reliable: true, serialization: 'json' });
+        
+        // Critical: Check if connect() returned a valid connection
+        if (!conn) {
+          throw new Error('Failed to create connection - peer may not be ready');
+        }
+        
+        this.attachConn(conn);
 
-    await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('Connection timeout')), timeoutMs);
-      conn.once('open', () => {
-        clearTimeout(t);
-        resolve();
-      });
-      conn.once('error', (err: unknown) => {
-        clearTimeout(t);
-        reject(err);
-      });
-    });
+        await new Promise<void>((resolve, reject) => {
+          const t = setTimeout(() => {
+            try { conn.close(); } catch {}
+            reject(new Error(`Connection timeout (attempt ${attempt})`));
+          }, timeoutMs);
+          
+          conn.once('open', () => {
+            clearTimeout(t);
+            console.log(`✅ Connection established on attempt ${attempt}`);
+            resolve();
+          });
+          
+          conn.once('error', (err: unknown) => {
+            clearTimeout(t);
+            reject(err instanceof Error ? err : new Error(String(err)));
+          });
+        });
+        
+        // If we get here, connection succeeded
+        return;
+        
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        console.warn(`⚠️ Connection attempt ${attempt} failed:`, lastError.message);
+        
+        if (attempt < maxRetries) {
+          // Exponential backoff: 1s, 2s, 4s between retries
+          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 4000);
+          console.log(`⏳ Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+    
+    throw lastError || new Error('Connection failed after all retries');
   }
 
   onMessage(handler: MessageHandler) {
@@ -285,7 +463,42 @@ class MultiplayerConnection {
     });
 
     this.peer.on('disconnected', () => {
-      console.warn('⚠️ PeerJS disconnected from signaling server');
+      console.warn('⚠️ PeerJS disconnected from signaling server, attempting reconnect...');
+      // Attempt to reconnect to signaling server with retry
+      const attemptReconnect = (retryCount = 0) => {
+        if (this.peer && !this.peer.destroyed) {
+          try {
+            this.peer.reconnect();
+            console.log('🔄 Reconnecting to signaling server...');
+          } catch (e) {
+            console.error('Failed to reconnect:', e);
+            // Retry up to 3 times with increasing delay
+            if (retryCount < 3) {
+              setTimeout(() => attemptReconnect(retryCount + 1), 1000 * (retryCount + 1));
+            }
+          }
+        }
+      };
+      setTimeout(() => attemptReconnect(), 1000);
+    });
+    
+    this.peer.on('error', (err: unknown) => {
+      const errorType = (err as any)?.type;
+      console.error('❌ PeerJS error:', errorType, err);
+      
+      // Handle specific error types that can be recovered
+      if (errorType === 'network' || errorType === 'server-error' || errorType === 'socket-error') {
+        console.log('🔄 Attempting recovery from network error...');
+        setTimeout(() => {
+          if (this.peer && !this.peer.destroyed) {
+            try {
+              this.peer.reconnect();
+            } catch (e) {
+              console.error('Recovery failed:', e);
+            }
+          }
+        }, 2000);
+      }
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -301,6 +514,9 @@ class MultiplayerConnection {
       });
     });
 
+    // Setup visibility change handler for phone sleep/wake
+    this.setupVisibilityHandler();
+
     return this.playerId;
   }
 
@@ -309,10 +525,45 @@ class MultiplayerConnection {
   }
 
   disconnect() {
+    // Clean up visibility handler
+    if (this.visibilityHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
+    
     this.conns.forEach((c) => c.close());
     this.conns.clear();
+    this.knownPeers.clear();
     this.peer?.destroy();
     this.peer = null;
+  }
+  
+  // Force reconnect all connections (can be called from UI)
+  async forceReconnect(): Promise<boolean> {
+    console.log('🔄 Force reconnecting all connections...');
+    
+    if (!this.peer || this.peer.destroyed) {
+      console.log('⚠️ Peer is destroyed, needs full reinitialization');
+      return false;
+    }
+    
+    // Reconnect to signaling if needed
+    if (!(this.peer as any).open) {
+      try {
+        this.peer.reconnect();
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch (e) {
+        console.error('Failed to reconnect to signaling:', e);
+        return false;
+      }
+    }
+    
+    // Reconnect to all known peers
+    await this.reconnectToKnownPeers();
+    
+    // Return true if at least some connections are healthy
+    const health = this.getConnectionHealth();
+    return health.connected > 0 || health.total === 0;
   }
 }
 

@@ -8,6 +8,7 @@ import { PlayerHand, OpponentHand } from './PlayerHand';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getCardPowerUp, PowerUpType, Card as CardType } from '@/types/game';
 import { getMultiplayerConnection } from '@/lib/multiplayer';
+import { useCardPositions } from '@/lib/useCardPositions';
 
 // Card dimensions (lg size)
 const CARD_WIDTH = 80;
@@ -255,6 +256,12 @@ export function GameTable() {
     }
   }, [game?.lastAction]);
 
+  // Use the coordinate position system
+  const cardPositions = useCardPositions({
+    players: game?.players || [],
+    myPlayerId: peerId,
+  });
+
   if (!game) return null;
 
   const currentPlayer = game.players[game.currentPlayerIndex];
@@ -485,6 +492,12 @@ export function GameTable() {
       const { type } = game.currentPowerUp;
       
       if (type === 'inspect_own') {
+        // If clicking the same card that's already being inspected, close inspection
+        if (inspectedCard && inspectedCard.playerId === peerId && inspectedCard.cardIndex === index) {
+          handleCloseInspection();
+          return;
+        }
+        
         // Set inspecting card in game state for real-time sync
         const { setInspectingCard } = useGameStore.getState();
         setInspectingCard({ playerId: peerId!, cardIndex: index });
@@ -581,6 +594,12 @@ export function GameTable() {
       const targetPlayer = game.players.find(p => p.id === playerId);
 
       if (type === 'inspect_other') {
+        // If clicking the same card that's already being inspected, close inspection
+        if (inspectedCard && inspectedCard.playerId === playerId && inspectedCard.cardIndex === cardIndex) {
+          handleCloseInspection();
+          return;
+        }
+        
         if (targetPlayer) {
           // Set inspecting card in game state for real-time sync
           const { setInspectingCard } = useGameStore.getState();
@@ -642,6 +661,8 @@ export function GameTable() {
               opponentCard: targetPlayer.cards[cardIndex],
               phase: 'selecting',
             }));
+            // Sync first selection to all players
+            setSwapSelection(playerId, cardIndex, null, type);
           } 
           // If first is selected but second is not (and it's a different card)
           else if (powerUpSwapAnim.secondOpponentId === null && 
@@ -904,42 +925,14 @@ export function GameTable() {
   };
 
   return (
-    <div className="relative w-full h-screen bg-gradient-to-br from-emerald-950 via-emerald-900 to-teal-950 overflow-hidden">
+    <div className="relative w-full min-h-[100dvh] h-auto bg-gradient-to-br from-emerald-950 via-emerald-900 to-teal-950 overflow-x-hidden overflow-y-auto touch-pan-y">
       {/* Felt texture overlay */}
-      <div className="absolute inset-0 opacity-30 felt-pattern" />
+      <div className="absolute inset-0 opacity-30 felt-pattern pointer-events-none" />
 
-      {/* Game info panel - top left */}
-      <div className="absolute top-4 left-4 bg-black/50 backdrop-blur px-4 py-3 rounded-lg z-20 max-w-xs">
-        <div className="text-emerald-400 text-xs">Game Code</div>
-        <div className="text-white font-mono text-xl font-bold tracking-wider mb-2">{game.gameCode}</div>
-        
-        {/* Last action */}
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={game.lastAction}
-            initial={{ opacity: 0, x: -10 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 10 }}
-            transition={{ type: 'spring', stiffness: 200, damping: 20 }}
-            className="border-t border-white/20 pt-2"
-          >
-            <div className="text-amber-300 text-xs font-medium leading-snug">{game.lastAction}</div>
-          </motion.div>
-        </AnimatePresence>
-        
-        {/* Instructions */}
-        <AnimatePresence>
-          {showInstructions && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-              className="border-t border-white/20 pt-2 mt-2"
-            >
-              <div className="text-emerald-100 text-xs leading-snug">{getInstructionText()}</div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+      {/* Compact game code - top left */}
+      <div className="absolute top-2 left-2 bg-black/40 backdrop-blur-sm px-2 py-1 rounded z-20">
+        <div className="text-emerald-400/70 text-[9px] uppercase tracking-wide">Code</div>
+        <div className="text-white/90 font-mono text-xs font-bold tracking-wider">{game.gameCode}</div>
       </div>
 
       {/* Opponents in circular layout around the table */}
@@ -1016,21 +1009,30 @@ export function GameTable() {
               }
               powerUpSelectedIndex={
                 // Use synced state for all players to see selection
+                // Check if this opponent's card is selected as TARGET
                 game.swapAnimation?.targetPlayerId === opponent.id 
-                  ? game.swapAnimation.targetCardIndex 
+                  ? game.swapAnimation.targetCardIndex ?? null
+                  // Check if this opponent's card is selected as SECOND TARGET (for _others swaps)
                   : game.swapAnimation?.secondTargetPlayerId === opponent.id 
                     ? game.swapAnimation.secondTargetCardIndex ?? null
-                    : (powerUpSwapAnim.opponentId === opponent.id 
-                        ? powerUpSwapAnim.opponentCardIndex 
-                        : powerUpSwapAnim.secondOpponentId === opponent.id 
-                          ? powerUpSwapAnim.secondOpponentCardIndex 
-                          : null)
+                    // Check if this opponent is the SOURCE player (their card selected for swap)
+                    : game.swapAnimation?.sourcePlayerId === opponent.id && game.swapAnimation.sourceCardIndex !== undefined
+                      ? game.swapAnimation.sourceCardIndex
+                      // Fallback to local state
+                      : (powerUpSwapAnim.opponentId === opponent.id 
+                          ? powerUpSwapAnim.opponentCardIndex 
+                          : powerUpSwapAnim.secondOpponentId === opponent.id 
+                            ? powerUpSwapAnim.secondOpponentCardIndex 
+                            : null)
               }
               powerUpConfirmed={
-                // Use synced state for all players to see confirmed selection
-                (game.swapAnimation?.targetPlayerId === opponent.id || game.swapAnimation?.secondTargetPlayerId === opponent.id) ||
+                // Use synced state for all players to see selection (any phase)
+                // Show highlight during selecting, confirmed, animating, or revealing
+                (game.swapAnimation?.targetPlayerId === opponent.id || 
+                 game.swapAnimation?.secondTargetPlayerId === opponent.id ||
+                 game.swapAnimation?.sourcePlayerId === opponent.id) ||
                 ((powerUpSwapAnim.opponentId === opponent.id || powerUpSwapAnim.secondOpponentId === opponent.id) && 
-                (powerUpSwapAnim.phase === 'confirmed' || powerUpSwapAnim.phase === 'animating' || powerUpSwapAnim.phase === 'revealing'))
+                (powerUpSwapAnim.phase === 'selecting' || powerUpSwapAnim.phase === 'confirmed' || powerUpSwapAnim.phase === 'animating' || powerUpSwapAnim.phase === 'revealing'))
               }
               inspectingCardIndex={opponentInspectingIndex}
               isViewerInspecting={isMyTurn && game.currentPowerUp?.type === 'inspect_other' && game.inspectingCard?.playerId === opponent.id}
@@ -1048,6 +1050,25 @@ export function GameTable() {
                 powerUpSwapAnim.opponentId === opponent.id
               }
               rotationAngle={rotationAngle}
+              hiddenCardIndex={
+                // Hide card during power-up swap animation (9/10 swaps)
+                (game.swapAnimation?.phase === 'animating' && 
+                 game.swapAnimation.targetPlayerId === opponent.id)
+                  ? game.swapAnimation.targetCardIndex ?? null
+                // Hide card for _others swaps (both targets)
+                : (game.swapAnimation?.phase === 'animating' && 
+                   game.swapAnimation.secondTargetPlayerId === opponent.id)
+                  ? game.swapAnimation.secondTargetCardIndex ?? null
+                // Hide card during give animation (target is receiving)
+                : (game.cardMoveAnimation?.type === 'give' && 
+                   game.cardMoveAnimation.targetPlayerId === opponent.id)
+                  ? game.cardMoveAnimation.targetHandIndex ?? null
+                // Hide card during swap animation for this opponent  
+                : (game.cardMoveAnimation?.type === 'swap' && 
+                   game.cardMoveAnimation.playerId === opponent.id)
+                  ? game.cardMoveAnimation.handIndex ?? null
+                  : null
+              }
             />
           </div>
         );
@@ -1630,6 +1651,20 @@ export function GameTable() {
                 ? powerUpSwapAnim.myCardIndex 
                 : null
             }
+            hiddenCardIndex={
+              // Hide card during power-up swap animation (9/10 swaps)
+              (game.swapAnimation?.phase === 'animating' && 
+               game.swapAnimation.sourcePlayerId === peerId &&
+               game.swapAnimation.sourceCardIndex !== undefined)
+                ? game.swapAnimation.sourceCardIndex
+              // Hide card during regular swap animation (my card being swapped out)
+              : cardMoveAnim.type === 'swap_cards' ? cardMoveAnim.handIndex 
+              // Hide card during give animation (I'm giving a card)
+              : (game.cardMoveAnimation?.type === 'give' && 
+                 game.cardMoveAnimation.playerId === peerId)
+                ? game.cardMoveAnimation.handIndex ?? null
+                : null
+            }
           />
         </div>
       )}
@@ -1748,26 +1783,6 @@ export function GameTable() {
         )}
       </AnimatePresence>
 
-      {/* Floating "Done" button for 7 and 8 power-ups (card stays in place) */}
-      <AnimatePresence>
-        {inspectedCard && (game.currentPowerUp?.type === 'inspect_own' || game.currentPowerUp?.type === 'inspect_other') && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 20 }}
-            className="fixed bottom-32 left-1/2 -translate-x-1/2 z-50"
-          >
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={handleCloseInspection}
-              className="px-6 py-3 bg-gradient-to-r from-amber-500 to-orange-600 text-white font-bold rounded-xl text-lg shadow-lg shadow-amber-500/30"
-            >
-              👁️ Done Looking
-            </motion.button>
-          </motion.div>
-        )}
-      </AnimatePresence>
       
       {/* Floating Swap/Keep buttons for inspect_swap (10) - appears when both cards selected */}
       <AnimatePresence>
@@ -1785,9 +1800,16 @@ export function GameTable() {
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               onClick={() => {
-                // Execute swap - pass myCardIndex as sourceCardIndex
+                // Execute swap with animation - pass myCardIndex as sourceCardIndex
                 if (powerUpSwapAnim.opponentId && powerUpSwapAnim.opponentCardIndex !== null && powerUpSwapAnim.myCardIndex !== null) {
-                  completePowerUp(powerUpSwapAnim.opponentId, powerUpSwapAnim.opponentCardIndex, powerUpSwapAnim.myCardIndex);
+                  // Start the swap animation so all players see the cards moving
+                  startSwapAnimation('inspect_swap', powerUpSwapAnim.opponentId, powerUpSwapAnim.opponentCardIndex, powerUpSwapAnim.myCardIndex);
+                  
+                  // Complete the swap after animation plays
+                  setTimeout(() => {
+                    completePowerUp(powerUpSwapAnim.opponentId!, powerUpSwapAnim.opponentCardIndex!, powerUpSwapAnim.myCardIndex!);
+                    clearSwapAnimation();
+                  }, ANIMATION_TIMING.swap);
                 }
                 setPowerUpSwapAnim({
                   myCardIndex: null,
@@ -1845,16 +1867,30 @@ export function GameTable() {
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               onClick={() => {
-                // Execute swap between opponents
+                // Execute swap between opponents with animation
                 if (powerUpSwapAnim.opponentId && powerUpSwapAnim.opponentCardIndex !== null &&
                     powerUpSwapAnim.secondOpponentId && powerUpSwapAnim.secondOpponentCardIndex !== null) {
-                  completePowerUp(
+                  // Start the swap animation so all players see the cards moving
+                  startSwapAnimation(
+                    'inspect_swap_others', 
                     powerUpSwapAnim.opponentId, 
                     powerUpSwapAnim.opponentCardIndex, 
                     undefined,
                     powerUpSwapAnim.secondOpponentId, 
                     powerUpSwapAnim.secondOpponentCardIndex
                   );
+                  
+                  // Complete the swap after animation plays
+                  setTimeout(() => {
+                    completePowerUp(
+                      powerUpSwapAnim.opponentId!, 
+                      powerUpSwapAnim.opponentCardIndex!, 
+                      undefined,
+                      powerUpSwapAnim.secondOpponentId!, 
+                      powerUpSwapAnim.secondOpponentCardIndex!
+                    );
+                    clearSwapAnimation();
+                  }, ANIMATION_TIMING.swap);
                 }
                 setPowerUpSwapAnim({
                   myCardIndex: null,
@@ -1922,35 +1958,31 @@ export function GameTable() {
                 // Determine if this is a regular swap (me <-> opponent) or others swap (opponent <-> opponent)
                 const isOthersSwap = game.swapAnimation.type === 'blind_swap_others' || game.swapAnimation.type === 'inspect_swap_others';
                 
-                // Get card positions based on whose card it is
-                const sourceIsMe = game.swapAnimation.sourcePlayerId === peerId;
-                const targetIsMe = game.swapAnimation.targetPlayerId === peerId;
+                // Use coordinate system for precise positions
+                const sourcePlayerIdx = game.players.findIndex(p => p.id === game.swapAnimation?.sourcePlayerId);
+                const targetPlayerIdx = game.players.findIndex(p => p.id === game.swapAnimation?.targetPlayerId);
+                const secondTargetPlayerIdx = game.players.findIndex(p => p.id === game.swapAnimation?.secondTargetPlayerId);
                 
-                // Position calculation (approximate based on table layout)
-                // Bottom = my hand, Top = opponent across, etc.
-                const myPosition = { x: '50%', y: '85%' };
-                const getOpponentPosition = (playerId: string) => {
-                  const opponentIndex = opponents.findIndex(o => o.id === playerId);
-                  const count = opponents.length;
-                  if (count === 1) return { x: '50%', y: '15%' };
-                  if (count === 2) {
-                    return opponentIndex === 0 ? { x: '20%', y: '30%' } : { x: '80%', y: '30%' };
-                  }
-                  // Default center top
-                  return { x: '50%', y: '15%' };
-                };
+                // Get precise card positions from the coordinate system
+                const sourceCardPos = isOthersSwap && targetPlayerIdx >= 0
+                  ? cardPositions.getPlayerCardPosition(targetPlayerIdx, game.swapAnimation.targetCardIndex ?? 0)
+                  : (sourcePlayerIdx >= 0 && game.swapAnimation.sourceCardIndex !== undefined
+                    ? cardPositions.getPlayerCardPosition(sourcePlayerIdx, game.swapAnimation.sourceCardIndex)
+                    : null);
+                    
+                const targetCardPos = isOthersSwap && secondTargetPlayerIdx >= 0
+                  ? cardPositions.getPlayerCardPosition(secondTargetPlayerIdx, game.swapAnimation.secondTargetCardIndex ?? 0)
+                  : (targetPlayerIdx >= 0
+                    ? cardPositions.getPlayerCardPosition(targetPlayerIdx, game.swapAnimation.targetCardIndex ?? 0)
+                    : null);
                 
-                const sourcePos = isOthersSwap 
-                  ? getOpponentPosition(game.swapAnimation.targetPlayerId!)
-                  : (sourceIsMe ? myPosition : getOpponentPosition(game.swapAnimation.sourcePlayerId || game.swapAnimation.playerId));
-                
-                const targetPos = isOthersSwap
-                  ? getOpponentPosition(game.swapAnimation.secondTargetPlayerId!)
-                  : (targetIsMe ? myPosition : getOpponentPosition(game.swapAnimation.targetPlayerId));
+                // Fallback positions if coordinate system doesn't have them
+                const sourcePos = sourceCardPos || { x: '50%', y: '85%' };
+                const targetPos = targetCardPos || { x: '50%', y: '15%' };
                 
                 const sourceName = isOthersSwap
                   ? game.players.find(p => p.id === game.swapAnimation?.targetPlayerId)?.name
-                  : (sourceIsMe ? myPlayer?.name : game.swapAnimation.playerName);
+                  : game.players.find(p => p.id === game.swapAnimation?.sourcePlayerId)?.name || game.swapAnimation.playerName;
                   
                 const targetName = isOthersSwap
                   ? game.players.find(p => p.id === game.swapAnimation?.secondTargetPlayerId)?.name
@@ -1966,17 +1998,19 @@ export function GameTable() {
                         top: sourcePos.y,
                         x: '-50%',
                         y: '-50%',
-                        scale: 1.5,
+                        scale: 1,
+                        opacity: 1,
                       }}
                       animate={{ 
                         left: [sourcePos.x, centerPos.x, targetPos.x],
                         top: [sourcePos.y, centerPos.y, targetPos.y],
                         x: '-50%',
                         y: '-50%',
-                        scale: [1.5, 1.6, 1.5],
+                        scale: [1, 1.3, 1],
+                        opacity: [1, 1, 0.9],
                       }}
                       transition={{ 
-                        duration: 1.2,
+                        duration: 1.0,
                         ease: 'easeInOut',
                         times: [0, 0.5, 1],
                       }}
@@ -1990,16 +2024,16 @@ export function GameTable() {
                             rank: 'A', 
                             faceUp: false 
                           }} 
-                          size="lg"
+                          size="md"
                         />
                       </div>
                       <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         transition={{ delay: 0.1 }}
-                        className="absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap"
+                        className="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap"
                       >
-                        <span className="px-2 py-1 rounded text-xs font-bold bg-emerald-600/90 text-white shadow-lg">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-600/90 text-white shadow-lg">
                           {sourceName}
                         </span>
                       </motion.div>
@@ -2012,17 +2046,19 @@ export function GameTable() {
                         top: targetPos.y,
                         x: '-50%',
                         y: '-50%',
-                        scale: 1.5,
+                        scale: 1,
+                        opacity: 1,
                       }}
                       animate={{ 
                         left: [targetPos.x, centerPos.x, sourcePos.x],
                         top: [targetPos.y, centerPos.y, sourcePos.y],
                         x: '-50%',
                         y: '-50%',
-                        scale: [1.5, 1.6, 1.5],
+                        scale: [1, 1.3, 1],
+                        opacity: [1, 1, 0.9],
                       }}
                       transition={{ 
-                        duration: 1.2,
+                        duration: 1.0,
                         ease: 'easeInOut',
                         times: [0, 0.5, 1],
                       }}
@@ -2036,16 +2072,16 @@ export function GameTable() {
                             rank: 'K', 
                             faceUp: false 
                           }} 
-                          size="lg"
+                          size="md"
                         />
                       </div>
                       <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         transition={{ delay: 0.1 }}
-                        className="absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap"
+                        className="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap"
                       >
-                        <span className="px-2 py-1 rounded text-xs font-bold bg-emerald-600/90 text-white shadow-lg">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-600/90 text-white shadow-lg">
                           {targetName}
                         </span>
                       </motion.div>
@@ -2268,9 +2304,9 @@ export function GameTable() {
         )}
       </AnimatePresence>
 
-      {/* Game over overlay */}
+      {/* Game over overlay - can be closed to inspect final hands */}
       <AnimatePresence>
-        {game.phase === 'game_over' && (
+        {game.phase === 'game_over' && showGameOverPanel && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -2281,8 +2317,22 @@ export function GameTable() {
               initial={{ scale: 0, rotate: -5 }}
               animate={{ scale: 1, rotate: 0 }}
               transition={{ type: 'spring', stiffness: 200, damping: 20 }}
-              className="bg-gradient-to-br from-emerald-800 to-emerald-900 p-8 rounded-2xl shadow-2xl max-w-lg w-full mx-4"
+              className="bg-gradient-to-br from-emerald-800 to-emerald-900 p-8 rounded-2xl shadow-2xl max-w-lg w-full mx-4 relative"
             >
+              {/* X button to close and inspect hands */}
+              <motion.button
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.3 }}
+                whileHover={{ scale: 1.1 }}
+                whileTap={{ scale: 0.9 }}
+                onClick={() => setShowGameOverPanel(false)}
+                className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white/70 hover:text-white transition-colors"
+                title="Close to inspect final hands"
+              >
+                ✕
+              </motion.button>
+              
               <motion.h2 
                 initial={{ y: -20, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
@@ -2345,6 +2395,10 @@ export function GameTable() {
                   ))}
               </div>
 
+              <p className="text-center text-emerald-300/70 text-sm mt-4">
+                Click ✕ to close and inspect all players' hands
+              </p>
+
               <motion.button
                 initial={{ y: 20, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
@@ -2352,7 +2406,7 @@ export function GameTable() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={() => window.location.reload()}
-                className="w-full mt-6 px-6 py-3 bg-gradient-to-r from-amber-500 to-orange-600 text-white font-bold rounded-xl shadow-lg"
+                className="w-full mt-4 px-6 py-3 bg-gradient-to-r from-amber-500 to-orange-600 text-white font-bold rounded-xl shadow-lg"
               >
                 Play Again
               </motion.button>
@@ -2360,6 +2414,20 @@ export function GameTable() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Button to reopen score panel after closing */}
+      {game.phase === 'game_over' && !showGameOverPanel && (
+        <motion.button
+          initial={{ opacity: 0, scale: 0.8 }}
+          animate={{ opacity: 1, scale: 1 }}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={() => setShowGameOverPanel(true)}
+          className="fixed bottom-8 right-8 z-50 px-6 py-3 bg-gradient-to-r from-amber-500 to-orange-600 text-white font-bold rounded-xl shadow-lg"
+        >
+          Show Scores / Play Again
+        </motion.button>
+      )}
     </div>
   );
 }

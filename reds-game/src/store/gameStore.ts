@@ -993,13 +993,8 @@ export const useGameStore = create<GameStore>()(
               const stackerName = game.stackAnimation.result.stackerName;
               
               if (playerIdx !== -1) {
-                // Add the penalty card
+                // Add the penalty card (keep it face down, don't reveal any cards)
                 updatedPlayers[playerIdx].cards.push({ ...penaltyCard, faceUp: false });
-
-                // If they now have more than 4 cards, reveal ALL of their cards to everyone
-                if (updatedPlayers[playerIdx].cards.length > 4) {
-                  updatedPlayers[playerIdx].cards = updatedPlayers[playerIdx].cards.map(c => ({ ...c, faceUp: true }));
-                }
               }
               
               set({
@@ -1060,8 +1055,8 @@ export const useGameStore = create<GameStore>()(
         const { game, peerId } = get();
         if (!game) return;
         
-        if (!targetPlayerId || targetCardIndex === null || !swapType) {
-          // Clear selection
+        // If no swap type, clear selection
+        if (!swapType) {
           set({
             game: {
               ...game,
@@ -1074,14 +1069,25 @@ export const useGameStore = create<GameStore>()(
         
         const currentPlayer = game.players[game.currentPlayerIndex];
         
+        // For _others swaps, preserve existing first target if we're adding second
+        const existingSwap = game.swapAnimation;
+        const isOthersSwap = swapType === 'blind_swap_others' || swapType === 'inspect_swap_others';
+        
+        // Allow partial selections (only source OR only target selected)
+        // This broadcasts the selection state so other players can see highlighting
         const swapAnimation: SwapAnimation = {
           type: swapType as SwapAnimation['type'],
           playerId: peerId!,
           playerName: currentPlayer.name,
           sourcePlayerId: peerId!,
           sourceCardIndex: sourceCardIndex ?? undefined,
-          targetPlayerId,
-          targetCardIndex,
+          targetPlayerId: targetPlayerId ?? undefined,
+          targetCardIndex: targetCardIndex ?? undefined,
+          // For _others swaps, preserve second target if it existed
+          secondTargetPlayerId: isOthersSwap && existingSwap?.secondTargetPlayerId 
+            ? existingSwap.secondTargetPlayerId : undefined,
+          secondTargetCardIndex: isOthersSwap && existingSwap?.secondTargetCardIndex !== undefined 
+            ? existingSwap.secondTargetCardIndex : undefined,
           phase: 'selecting',
           startedAt: Date.now(),
         };

@@ -4,6 +4,31 @@ import { Card } from './Card';
 import { Card as CardType, Player } from '@/types/game';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getCardValue } from '@/types/game';
+import { useState, useEffect } from 'react';
+
+// Hook to detect screen size for responsive card sizing
+function useResponsiveCardSize(): 'xs' | 'sm' | 'md' {
+  const [size, setSize] = useState<'xs' | 'sm' | 'md'>('md');
+  
+  useEffect(() => {
+    const updateSize = () => {
+      const width = window.innerWidth;
+      if (width < 400) {
+        setSize('xs');
+      } else if (width < 640) {
+        setSize('sm');
+      } else {
+        setSize('md');
+      }
+    };
+    
+    updateSize();
+    window.addEventListener('resize', updateSize);
+    return () => window.removeEventListener('resize', updateSize);
+  }, []);
+  
+  return size;
+}
 
 interface PlayerHandProps {
   player: Player;
@@ -20,6 +45,7 @@ interface PlayerHandProps {
   inspectingCardIndex?: number | null;
   isInspectingMyCard?: boolean;
   revealingSwapCardIndex?: number | null; // For inspect_swap (10) revealing phase
+  hiddenCardIndex?: number | null; // Card being animated (hidden during swap)
 }
 
 export function PlayerHand({
@@ -37,12 +63,13 @@ export function PlayerHand({
   inspectingCardIndex,
   isInspectingMyCard = false,
   revealingSwapCardIndex,
+  hiddenCardIndex,
 }: PlayerHandProps) {
-  // Cards 0, 1 are top row; 2, 3 are bottom row
-  const bottomCardIndices = [2, 3];
+  // Responsive card size
+  const cardSize = useResponsiveCardSize();
   
-  // Use horizontal layout if player has more than 4 cards (penalty situation)
-  const useHorizontalLayout = player.cards.length > 4;
+  // Cards 0, 1 are top row; 2, 3 are bottom row (for initial 4 cards)
+  const bottomCardIndices = [2, 3];
 
   return (
     <motion.div
@@ -71,8 +98,8 @@ export function PlayerHand({
         )}
       </motion.div>
 
-      {/* Cards - 2x2 grid normally, horizontal row if >4 cards */}
-      <div className={`${useHorizontalLayout ? 'flex flex-row flex-wrap justify-center gap-2' : 'grid grid-cols-2 gap-3'} overflow-visible`}>
+      {/* Cards - always 2-column grid, adds rows for penalty cards */}
+      <div className="grid grid-cols-2 gap-1.5 sm:gap-2 md:gap-3 overflow-visible">
         <AnimatePresence mode="popLayout">
           {player.cards.map((card, index) => {
             const shouldShowCard = isMyHand && (
@@ -91,6 +118,7 @@ export function PlayerHand({
             // Also flip if this is a revealing swap card
             const showInspectedFace = (isBeingInspected && isInspectingMyCard) || isRevealingSwap;
             const shouldEnlarge = isBeingInspected || isRevealingSwap;
+            const isHidden = hiddenCardIndex === index; // Card being animated elsewhere
             
             return (
               <motion.div
@@ -99,8 +127,8 @@ export function PlayerHand({
                 initial={{ scale: 1, opacity: 1 }}
                 animate={{ 
                   // 50% larger when selected for 9/10 power-ups, or when inspecting/revealing
-                  scale: shouldEnlarge ? 1.5 : isPowerUpSelected ? 1.5 : 1, 
-                  opacity: 1, 
+                  scale: isHidden ? 0.8 : shouldEnlarge ? 1.5 : isPowerUpSelected ? 1.5 : 1, 
+                  opacity: isHidden ? 0 : 1, // Hide card during swap animation
                   zIndex: shouldEnlarge ? 100 : isPowerUpSelected ? 50 : 1,
                 }}
                 exit={{ scale: 0, opacity: 0, y: -50 }}
@@ -108,9 +136,9 @@ export function PlayerHand({
                   type: 'spring',
                   stiffness: 150,
                   damping: 20,
-                  delay: index * 0.08 
+                  delay: isHidden ? 0 : index * 0.08 
                 }}
-                className={`relative ${isPowerUpSelectable && !isBeingInspected && !isRevealingSwap ? 'cursor-pointer' : ''}`}
+                className={`relative ${(isPowerUpSelectable || isBeingInspected) && !isRevealingSwap ? 'cursor-pointer' : ''}`}
                 style={{ position: shouldEnlarge || isPowerUpSelected ? 'relative' : undefined }}
               >
                 {/* Squeeze-expand flip animation container */}
@@ -163,11 +191,11 @@ export function PlayerHand({
                     <Card
                       card={card}
                       showPeek={shouldShowCard && !card.faceUp}
-                      onClick={onCardClick && !isBeingInspected && !isRevealingSwap ? () => onCardClick(index) : undefined}
+                      onClick={onCardClick && !isRevealingSwap ? () => onCardClick(index) : undefined}
                       selected={selectedCardIndex === index}
                       highlighted={highlightedCardIndex === index}
-                      size="md"
-                      disabled={(!isMyHand && !onCardClick) || isBeingInspected || isRevealingSwap}
+                      size={cardSize}
+                      disabled={(!isMyHand && !onCardClick) || isRevealingSwap}
                     />
                   </motion.div>
                   
@@ -178,6 +206,7 @@ export function PlayerHand({
                       animate={{ scaleX: 1, opacity: 1 }}
                       transition={{ duration: 0.3, ease: 'easeOut', delay: 0.3 }}
                       style={{ transformOrigin: 'center' }}
+                      className="cursor-pointer"
                     >
                       {/* Inspection/Reveal highlight ring for flipped card */}
                       <motion.div
@@ -195,16 +224,16 @@ export function PlayerHand({
                       />
                       <Card
                         card={{ ...card, faceUp: true }}
-                        onClick={undefined}
+                        onClick={onCardClick && !isRevealingSwap ? () => onCardClick(index) : undefined}
                         selected={false}
                         highlighted={false}
-                        size="md"
-                        disabled={true}
+                        size={cardSize}
+                        disabled={isRevealingSwap}
                       />
                     </motion.div>
                   )}
                 </div>
-                {/* "Inspecting" or "Comparing" label */}
+                {/* "Inspecting" label */}
                 {isBeingInspected && !isRevealingSwap && (
                   <motion.div
                     initial={{ opacity: 0, y: 10 }}
@@ -247,6 +276,7 @@ export function OpponentHand({
   revealingSwapCardIndex,
   isViewerRevealing = false,
   rotationAngle = 0,
+  hiddenCardIndex,
 }: {
   player: Player;
   isCurrentPlayer: boolean;
@@ -261,19 +291,44 @@ export function OpponentHand({
   revealingSwapCardIndex?: number | null; // For inspect_swap (10) revealing phase
   isViewerRevealing?: boolean; // True if the current viewer is revealing this card for swap
   rotationAngle?: number;
+  hiddenCardIndex?: number | null; // Card being animated (hidden during swap/give)
 }) {
-  // Use horizontal layout if player has more than 4 cards (penalty situation)
-  const useHorizontalLayout = player.cards.length > 4;
+  // Responsive card size
+  const cardSize = useResponsiveCardSize();
   
   // Reorder cards based on rotation - if facing us (180 deg), flip the card order
-  // so their bottom cards (indices 2,3) appear at top (only for 4-card layout)
-  const shouldFlipLayout = !useHorizontalLayout && Math.abs(rotationAngle) > 90;
+  // so their bottom cards appear at top from our perspective
+  const shouldFlipLayout = Math.abs(rotationAngle || 0) > 90;
   
-  // Card display order: if flipped, show [2,3] on top row and [0,1] on bottom
-  // For horizontal layout, just use normal order
-  const cardOrder = useHorizontalLayout 
-    ? player.cards.map((_, i) => i) 
-    : (shouldFlipLayout ? [2, 3, 0, 1] : [0, 1, 2, 3]);
+  // Card display order: flip rows AND columns when rotated to mirror the opponent's view
+  // In a 2-column grid:
+  // Original: [0,1] [2,3] [4,5] ... (top to bottom rows)
+  // Flipped:  [last-1,last] ... [3,2] [1,0] (reversed rows, swapped columns within each row)
+  const cardOrder = (() => {
+    const totalCards = player.cards.length;
+    if (!shouldFlipLayout) {
+      // Normal order
+      return player.cards.map((_, i) => i);
+    }
+    
+    // For rotated opponents, flip the entire layout
+    // Each row pair should be reversed, and rows should be in reverse order
+    const totalRows = Math.ceil(totalCards / 2);
+    const flippedOrder: number[] = [];
+    
+    for (let row = totalRows - 1; row >= 0; row--) {
+      const leftIdx = row * 2;
+      const rightIdx = row * 2 + 1;
+      
+      // Swap left and right within each row
+      if (rightIdx < totalCards) {
+        flippedOrder.push(rightIdx);
+      }
+      flippedOrder.push(leftIdx);
+    }
+    
+    return flippedOrder;
+  })();
 
   return (
     <motion.div 
@@ -301,8 +356,8 @@ export function OpponentHand({
         {player.hasCalledReds && <span className="font-bold text-red-600">REDS!</span>}
       </motion.div>
 
-      {/* Compact card display - 2x2 grid normally, horizontal row if >4 cards */}
-      <div className={`${useHorizontalLayout ? 'flex flex-row flex-wrap justify-center gap-1' : 'grid grid-cols-2 gap-1.5'} overflow-visible`}>
+      {/* Compact card display - always 2-column grid, adds rows for penalty cards */}
+      <div className="grid grid-cols-2 gap-1 sm:gap-1.5 overflow-visible">
         <AnimatePresence mode="popLayout">
           {cardOrder.map((originalIndex) => {
             const card = player.cards[originalIndex];
@@ -318,6 +373,7 @@ export function OpponentHand({
             // If I'm the one inspecting/revealing, show the card flipped (face up)
             const showFlippedCard = (isBeingInspected && isViewerInspecting) || (isRevealingSwap && isViewerRevealing);
             const shouldEnlarge = isBeingInspected || isRevealingSwap;
+            const isHidden = hiddenCardIndex === originalIndex; // Card being animated elsewhere
             
             return (
               <motion.div
@@ -326,8 +382,8 @@ export function OpponentHand({
                 initial={{ scale: 1, opacity: 1 }}
                 animate={{ 
                   // 50% larger when selected for 9/10 power-ups, or when inspecting/revealing
-                  scale: shouldEnlarge ? 1.5 : isPowerUpSelected ? 1.5 : 1, 
-                  opacity: 1,
+                  scale: isHidden ? 0.8 : shouldEnlarge ? 1.5 : isPowerUpSelected ? 1.5 : 1, 
+                  opacity: isHidden ? 0 : 1, // Hide card during swap/give animation
                   zIndex: shouldEnlarge ? 100 : isPowerUpSelected ? 50 : 1,
                 }}
                 exit={{ scale: 0, opacity: 0, y: 30 }}
@@ -336,8 +392,8 @@ export function OpponentHand({
                   stiffness: 150,
                   damping: 20,
                 }}
-                whileHover={onCardClick && !isBeingInspected && !isRevealingSwap && !isPowerUpSelected ? { scale: 1.1, y: -5 } : {}}
-                className={`relative ${(onCardClick && !isBeingInspected && !isRevealingSwap) || isPowerUpSelectable ? 'cursor-pointer' : ''}`}
+                whileHover={onCardClick && !isRevealingSwap && !isPowerUpSelected && !isHidden ? { scale: 1.1, y: -5 } : {}}
+                className={`relative ${(onCardClick && !isRevealingSwap) || isPowerUpSelectable || isBeingInspected ? 'cursor-pointer' : ''}`}
                 style={{ position: shouldEnlarge || isPowerUpSelected ? 'relative' : undefined }}
               >
                 {/* Squeeze-expand flip animation container */}
@@ -390,9 +446,9 @@ export function OpponentHand({
                     <Card
                       key={card.id}
                       card={card}
-                      onClick={onCardClick && !isBeingInspected && !isRevealingSwap ? () => onCardClick(originalIndex) : undefined}
+                      onClick={onCardClick && !isRevealingSwap ? () => onCardClick(originalIndex) : undefined}
                       highlighted={highlightedCardIndex === originalIndex}
-                      size="md"
+                      size={cardSize}
                     />
                   </motion.div>
                   
@@ -403,6 +459,7 @@ export function OpponentHand({
                       animate={{ scaleX: 1, opacity: 1 }}
                       transition={{ duration: 0.3, ease: 'easeOut', delay: 0.3 }}
                       style={{ transformOrigin: 'center' }}
+                      className="cursor-pointer"
                     >
                       {/* Inspection/Reveal highlight ring for flipped card */}
                       <motion.div
@@ -420,10 +477,10 @@ export function OpponentHand({
                       />
                       <Card
                         card={{ ...card, faceUp: true }}
-                        onClick={undefined}
+                        onClick={onCardClick && !isRevealingSwap ? () => onCardClick(originalIndex) : undefined}
                         highlighted={false}
-                        size="md"
-                        disabled={true}
+                        size={cardSize}
+                        disabled={isRevealingSwap}
                       />
                     </motion.div>
                   )}
